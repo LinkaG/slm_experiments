@@ -1,0 +1,12 @@
+name: oracle_context
+description: "Evaluate model with perfect context retrieval (using ground truth contexts)"
+
+# Retriever settings
+use_retriever: false
+context_type: oracle
+max_context_length: 512  # максимальная длина контекста
+
+# Experiment settings
+max_samples: null  # use all samples
+metrics:
+  - token_recall

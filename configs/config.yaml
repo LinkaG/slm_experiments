@@ -1,0 +1,22 @@
+defaults:
+  - model: smollm2_135m
+  - retriever: bm25
+  - dataset: nq
+  - experiment_mode: retriever_context  # default mode
+  - _self_
+
+experiment:
+  name: ${model.name}_${dataset.name}_${experiment_mode.name}
+  output_dir: outputs/${experiment.name}
+  
+  # Experiment settings
+  seed: 42
+  log_predictions: true  # сохранять предсказания модели
+  save_contexts: true   # сохранять использованные контексты
+
+hydra:
+  run:
+    dir: outputs/${experiment.name}
+  sweep:
+    dir: multirun
+    subdir: ${experiment.name}

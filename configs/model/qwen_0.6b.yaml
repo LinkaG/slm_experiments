@@ -1,0 +1,10 @@
+name: qwen_0.6b
+model_type: qwen
+model_size: 0.6B
+model_path: Qwen/Qwen-0.6B
+max_length: 512
+temperature: 0.7
+top_p: 0.9
+device: cuda
+batch_size: 16
+use_flash_attention: true

@@ -1,0 +1,16 @@
+name: retriever_context
+description: "Standard evaluation using retrieved context"
+
+# Retriever settings
+use_retriever: true
+context_type: retrieved
+max_context_length: 512
+
+# Retriever specific settings
+top_k: 3  # number of contexts to retrieve
+min_score: 0.5  # minimum relevance score
+
+# Experiment settings
+max_samples: null
+metrics:
+  - token_recall

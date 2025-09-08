@@ -1,0 +1,11 @@
+name: no_context
+description: "Evaluate model's zero-shot question answering ability without any context"
+
+# Retriever settings
+use_retriever: false
+context_type: none
+
+# Experiment settings
+max_samples: null  # use all samples
+metrics:
+  - token_recall
