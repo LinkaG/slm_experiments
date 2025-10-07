@@ -18,7 +18,6 @@ class BaseDataset(ABC):
         """Initialize dataset with configuration."""
         pass
     
-    @abstractmethod
     def load_from_s3(self, bucket: str, key: str):
         """Load dataset from S3."""
         pass

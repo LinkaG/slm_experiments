@@ -1,0 +1,6 @@
+name: local_natural_questions
+type: nq
+use_local: true
+train_path: data/nq/nq_converted_eval.json
+eval_path: data/nq/nq_converted_eval.json
+cache_dir: .cache/datasets

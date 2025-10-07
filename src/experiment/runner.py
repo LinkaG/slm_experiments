@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 from statistics import mean
+import json
+import time
 from clearml import Task, Logger
 
 from ..models.base import BaseModel
@@ -37,12 +39,29 @@ class ExperimentRunner:
         self.task = Task.init(
             project_name="slm-experiments",
             task_name=self.config.name,
+            auto_connect_frameworks=False  # Отключаем автоматическое подключение фреймворков
         )
-        # Log configuration
-        self.task.connect(self.config.__dict__)
+        
+        # Логируем конфигурацию эксперимента
+        self.task.connect({
+            "model": self.config.model_config,
+            "retriever": self.config.retriever_config,
+            "dataset": self.config.dataset_config,
+            "metrics": self.config.metrics_config
+        })
+        
+        # Настраиваем логирование
         self.logger = Logger.current_logger()
         
+        # Создаем директорию для результатов
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Логируем информацию о начале эксперимента
+        self.logger.report_text("🚀 Начало эксперимента")
+        self.logger.report_text(f"📁 Директория результатов: {self.config.output_dir}")
+        self.logger.report_text(f"🤖 Модель: {self.config.model_config.get('name', 'unknown')}")
+        self.logger.report_text(f"🔍 Ретривер: {self.config.retriever_config.get('name', 'unknown')}")
+        self.logger.report_text(f"📊 Датасет: {self.config.dataset_config.get('name', 'unknown')}")
         
     def run(self, model: BaseModel, retriever: BaseRetriever, dataset: BaseDataset):
         """Run the experiment."""
@@ -73,10 +92,25 @@ class ExperimentRunner:
                 iteration=0
             )
         
-        # Run evaluation
+        # Запускаем оценку
+        self.logger.report_text("🔄 Начинаем оценку модели...")
+        start_time = time.time()
+        
         metrics = self._evaluate(model, retriever, dataset)
         
-        # Log results
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        # Логируем время выполнения
+        self.logger.report_scalar(
+            title="experiment",
+            series="duration_seconds",
+            value=duration,
+            iteration=0
+        )
+        self.logger.report_text(f"⏱️ Время выполнения: {duration:.2f} секунд")
+        
+        # Логируем результаты
         for metric_name, value in metrics.items():
             self.logger.report_scalar(
                 title="metrics",
@@ -84,14 +118,21 @@ class ExperimentRunner:
                 value=value,
                 iteration=0
             )
+        
+        # Сохраняем результаты
         self._save_results(metrics)
         
-        # Final memory state and save memory log
+        # Финальное состояние памяти и сохранение лога
         self.memory_tracker.log_memory("system", "experiment_end")
         self.memory_tracker.save_log()
         
-        # Save predictions and upload as artifact
+        # Сохраняем предсказания и загружаем как артефакт
         self.predictions_tracker.save_predictions()
+        
+        # Логируем завершение эксперимента
+        self.logger.report_text("✅ Эксперимент успешно завершен!")
+        self.logger.report_text(f"📈 Токен-реколл: {metrics.get('token_recall', 0):.4f}")
+        self.logger.report_text(f"📊 Количество примеров: {metrics.get('num_examples', 0)}")
         
     def _get_context(self, item: DatasetItem, retriever: Optional[BaseRetriever]) -> List[str]:
         """Get context based on experiment mode."""
@@ -187,7 +228,33 @@ class ExperimentRunner:
         }
     
     def _save_results(self, metrics: Dict[str, float]):
-        """Save experiment results to disk."""
+        """Save experiment results to disk and upload to ClearML."""
         results_file = self.config.output_dir / "results.json"
+        
+        # Сохраняем результаты локально
         with open(results_file, "w") as f:
             json.dump(metrics, f, indent=2)
+        
+        # Загружаем результаты как артефакт в ClearML
+        self.task.upload_artifact(
+            name="experiment_results",
+            artifact_object=results_file,
+            metadata={
+                "experiment_name": self.config.name,
+                "model": self.config.model_config.get('name', 'unknown'),
+                "dataset": self.config.dataset_config.get('name', 'unknown'),
+                "retriever": self.config.retriever_config.get('name', 'unknown'),
+                "timestamp": time.time()
+            }
+        )
+        
+        # Логируем финальные метрики
+        self.logger.report_text("📊 Финальные результаты эксперимента:")
+        for metric_name, value in metrics.items():
+            self.logger.report_text(f"  {metric_name}: {value:.4f}")
+            self.logger.report_scalar(
+                title="final_metrics",
+                series=metric_name,
+                value=value,
+                iteration=0
+            )

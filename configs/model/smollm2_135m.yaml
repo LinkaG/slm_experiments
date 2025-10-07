@@ -1,7 +1,7 @@
 name: smollm2_135m
 model_type: smollm2
 model_size: 135M
-model_path: smollm2/135m
+model_path: HuggingFaceTB/SmolLM-135M
 max_length: 512
 temperature: 0.7
 top_p: 0.9

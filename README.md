@@ -22,25 +22,131 @@ slm_experiments/
 
 ## Установка
 
-1. Установка зависимостей:
+### Требования
+
+- Python 3.10+ (рекомендуется 3.10-3.13)
+- Poetry (менеджер зависимостей)
+- Git
+
+### Установка Poetry
+
+Если Poetry не установлен:
+
 ```bash
-pip install -r requirements.txt
+# Установка через pip
+pip3 install poetry
+
+# Или через официальный установщик
+curl -sSL https://install.python-poetry.org | python3 -
 ```
 
-2. Настройка переменных окружения и ClearML:
+Если poetry установлен в пользовательскую дикерторию, то до вызова poetry использовать команду:
+
 ```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Настройка проекта
+
+1. **Клонирование репозитория:**
+```bash
+git clone <repository-url>
+cd slm_experiments
+```
+
+2. **Установка зависимостей:**
+```bash
+# Установка всех зависимостей
+poetry install
+
+# Или только основных (без PyTorch для экономии места)
+poetry install --no-dev
+```
+
+3. **Активация виртуального окружения:**
+```bash
+# Активация shell
+poetry shell
+
+# Или запуск команд через poetry run
+poetry run python script.py
+```
+
+4. **Настройка переменных окружения:**
+```bash
+# Создание файла .env (если нужен S3)
 cp .env.example .env
-# Отредактируйте .env, добавив учетные данные S3 и другие настройки
+# Отредактируйте .env, добавив учетные данные S3
 
 # Настройка ClearML
 cp clearml.conf ~/.clearml.conf
 # Отредактируйте ~/.clearml.conf, добавив учетные данные ClearML
 ```
 
-3. Настройка сервера ClearML (при локальном запуске):
+5. **Настройка сервера ClearML (при локальном запуске):**
 ```bash
-clearml-server
+poetry run clearml-server
 ```
+
+### Альтернативная установка (без Poetry)
+
+Если вы предпочитаете pip:
+
+```bash
+# Создание виртуального окружения
+python3.10 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# или
+venv\Scripts\activate     # Windows
+
+# Установка зависимостей
+pip install -r requirements.txt
+```
+
+## Работа с данными
+
+### Локальные данные
+
+Проект поддерживает работу с локальными данными без необходимости настройки S3:
+
+1. **Natural Questions (NQ)**:
+   - Данные уже конвертированы и находятся в `data/nq/`
+   - Train: `data/nq/nq_converted_train.json` (80 примеров)
+   - Eval: `data/nq/nq_converted_eval.json` (20 примеров)
+
+2. **Конвертация дополнительных данных**:
+   ```bash
+   # Конвертация с ограничением
+   poetry run python convert_nq_data.py \
+     --input data/nq/NQ-open.dev.merged.jsonl \
+     --output data/nq/nq_converted.json \
+     --max-items 1000 \
+     --split
+   ```
+
+3. **Тестирование загрузки данных**:
+   ```bash
+   poetry run python test_local_data.py
+   ```
+
+### S3 данные (опционально)
+
+Если у вас есть доступ к S3:
+
+1. **Настройка AWS credentials**:
+   ```bash
+   cp .env.example .env
+   # Отредактируйте .env, добавив:
+   # AWS_ACCESS_KEY_ID=your_key
+   # AWS_SECRET_ACCESS_KEY=your_secret
+   # AWS_REGION=us-east-1
+   ```
+
+2. **Загрузка данных в S3**:
+   ```bash
+   aws s3 cp data/nq/train.json s3://your-bucket/datasets/nq/train.json
+   aws s3 cp data/nq/eval.json s3://your-bucket/datasets/nq/eval.json
+   ```
 
 ## Руководство по проведению экспериментов
 
@@ -69,42 +175,42 @@ clearml-server
    - Оценка способности модели отвечать на вопросы без дополнительного контекста
    - Проверка базовых знаний модели
    ```bash
-   python -m src.cli run-experiment model=smollm2_135m dataset=nq experiment_mode=no_context
+   poetry run python -m src.cli run-experiment model=smollm2_135m dataset=local_nq experiment_mode=no_context
    ```
 
 2. **С идеальным контекстом** (oracle_context):
    - Использование ground truth контекста из датасета
    - Оценка верхней границы производительности модели
    ```bash
-   python -m src.cli run-experiment model=smollm2_135m dataset=nq experiment_mode=oracle_context
+   poetry run python -m src.cli run-experiment model=smollm2_135m dataset=local_nq experiment_mode=oracle_context
    ```
 
 3. **С ретривером** (retriever_context):
    - Стандартный режим с использованием ретривера
    - Оценка производительности всего пайплайна
    ```bash
-   python -m src.cli run-experiment model=smollm2_135m dataset=nq experiment_mode=retriever_context
+   poetry run python -m src.cli run-experiment model=smollm2_135m dataset=local_nq experiment_mode=retriever_context
    ```
 
 ### Запуск эксперимента
 
 1. **Базовый запуск**:
    ```bash
-   python -m src.cli run-experiment model=smollm2_135m dataset=nq
+   poetry run python -m src.cli run-experiment model=smollm2_135m dataset=local_nq
    ```
 
 2. **Запуск с полной конфигурацией**:
    ```bash
-   python -m src.cli run-experiment \
+   poetry run python -m src.cli run-experiment \
      model=smollm2_135m \
-     dataset=nq \
+     dataset=local_nq \
      retriever=bm25 \
      experiment.name=my_custom_experiment
    ```
 
 3. **Изменение параметров на лету**:
    ```bash
-   python -m src.cli run-experiment \
+   poetry run python -m src.cli run-experiment \
      model=smollm2_135m \
      model.temperature=0.9 \
      model.batch_size=16
@@ -139,9 +245,9 @@ clearml-server
 1. **Запуск серии экспериментов**:
    ```bash
    # Сравнение разных размеров модели
-   python -m src.cli run-experiment model=smollm2_135m
-   python -m src.cli run-experiment model=smollm2_360m
-   python -m src.cli run-experiment model=smollm2_1.7b
+   poetry run python -m src.cli run-experiment model=smollm2_135m dataset=local_nq
+   poetry run python -m src.cli run-experiment model=smollm2_360m dataset=local_nq
+   poetry run python -m src.cli run-experiment model=smollm2_1.7b dataset=local_nq
    ```
 
 2. **Анализ результатов**:
@@ -194,3 +300,57 @@ clearml-server
 1. Создайте новый класс датасета в `src/data/`
 2. Реализуйте интерфейс `BaseDataset`
 3. Добавьте конфигурацию в `configs/dataset/`
+
+## Полезные команды Poetry
+
+```bash
+# Просмотр установленных зависимостей
+poetry show
+
+# Обновление зависимостей
+poetry update
+
+# Добавление новой зависимости
+poetry add package-name
+
+# Добавление dev зависимости
+poetry add --group dev package-name
+
+# Запуск команды в виртуальном окружении
+poetry run python script.py
+
+# Активация shell
+poetry shell
+
+# Просмотр информации о проекте
+poetry info
+
+# Экспорт зависимостей в requirements.txt
+poetry export -f requirements.txt --output requirements.txt
+```
+
+## Структура проекта
+
+```
+slm_experiments/
+├── data/                    # Данные
+│   └── nq/                 # Natural Questions
+│       ├── NQ-open.dev.merged.jsonl.zip  # Исходный архив
+│       ├── NQ-open.dev.merged.jsonl      # Распакованный файл
+│       ├── nq_converted_train.json       # Train данные
+│       └── nq_converted_eval.json        # Eval данные
+├── configs/                # Конфигурации Hydra
+│   ├── model/             # Конфигурации моделей
+│   ├── retriever/         # Конфигурации ретриверов
+│   └── dataset/           # Конфигурации датасетов
+├── src/                   # Исходный код
+│   ├── data/              # Обработка датасетов
+│   ├── models/            # Реализации моделей
+│   ├── retrievers/        # Реализации ретриверов
+│   ├── experiment/        # Запуск экспериментов и метрики
+│   └── utils/             # Общие утилиты
+├── tests/                 # Тесты
+├── pyproject.toml         # Poetry конфигурация
+├── convert_nq_data.py     # Скрипт конвертации данных
+└── test_local_data.py     # Тест загрузки данных
+```

@@ -25,7 +25,6 @@ def run_experiment(cfg: DictConfig):
         model_config=dict(cfg.model),
         retriever_config=dict(cfg.retriever),
         dataset_config=dict(cfg.dataset),
-        metrics_config=dict(cfg.metrics),
         output_dir=Path(cfg.experiment.output_dir)
     )
     
