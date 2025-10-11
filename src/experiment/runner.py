@@ -9,7 +9,7 @@ from clearml import Task, Logger
 
 from ..models.base import BaseModel
 from ..retrievers.base import BaseRetriever
-from ..data.base import BaseDataset
+from ..data.base import BaseDataset, DatasetItem
 from .metrics import TokenRecallCalculator
 from ..utils.memory_tracker import MemoryTracker
 from ..utils.predictions_tracker import PredictionsTracker
@@ -23,6 +23,10 @@ class ExperimentConfig:
     dataset_config: Dict[str, Any]
     metrics_config: Dict[str, Any]
     output_dir: Path
+    max_samples: Optional[int] = None
+    use_retriever: bool = False
+    context_type: str = "none"
+    model: Optional[Any] = None
 
 class ExperimentRunner:
     """Main class for running experiments."""
@@ -77,12 +81,13 @@ class ExperimentRunner:
             value=model.get_model_size(),
             iteration=0
         )
-        self.logger.report_scalar(
-            title="retriever",
-            series="index_size",
-            value=retriever.get_index_size(),
-            iteration=0
-        )
+        if retriever is not None:
+            self.logger.report_scalar(
+                title="retriever",
+                series="index_size",
+                value=retriever.get_index_size(),
+                iteration=0
+            )
         # Log dataset stats
         for key, value in dataset.get_dataset_stats().items():
             self.logger.report_scalar(
@@ -156,7 +161,12 @@ class ExperimentRunner:
         recalls = []
         processed = 0
         
-        for item in dataset.get_eval_data():
+        # Get total number of examples for progress tracking
+        eval_data = list(dataset.get_eval_data())
+        total_examples = len(eval_data)
+        self.logger.info(f"📊 Всего примеров для обработки: {total_examples}")
+        
+        for item in eval_data:
             if not item.answer:  # Skip items without ground truth
                 continue
             
@@ -184,10 +194,6 @@ class ExperimentRunner:
             
             self.memory_tracker.log_memory("model", "after_generate")
             
-            # Clear memory periodically
-            if processed % 100 == 0:
-                self.memory_tracker.clear_memory()
-            
             # Calculate token recall
             recall = self.metric_calculator.calculate_recall(
                 predicted=predicted_answer,
@@ -203,10 +209,10 @@ class ExperimentRunner:
                 ground_truth=item.answer,
                 contexts=contexts,
                 context_type=self.config.context_type,
-                model_name=self.config.model.name,
+                model_name=self.config.model_config.get('name', 'unknown'),
                 token_recall=recall,
                 metadata={
-                    'dataset': self.config.dataset.name,
+                    'dataset': self.config.dataset_config.get('name', 'unknown'),
                     **item.metadata
                 }
             )
@@ -218,6 +224,14 @@ class ExperimentRunner:
                 value=recall,
                 iteration=len(recalls)
             )
+            
+            # Increment processed counter
+            processed += 1
+            
+            # Clear memory periodically and log progress AFTER incrementing
+            if processed % 100 == 0:
+                self.memory_tracker.clear_memory()
+                self.logger.info(f"📊 Обработано примеров: {processed}/{total_examples} ({processed/total_examples*100:.1f}%)")
         
         # Calculate average recall
         avg_recall = mean(recalls) if recalls else 0.0

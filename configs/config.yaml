@@ -1,8 +1,7 @@
 defaults:
   - model: smollm2_135m
-  - retriever: bm25
-  - dataset: nq
-  - experiment_mode: retriever_context  # default mode
+  - dataset: rag_nq
+  - experiment_mode: no_context  # default mode
   - _self_
 
 experiment:
