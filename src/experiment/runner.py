@@ -36,6 +36,7 @@ class ExperimentConfig:
     max_samples: Optional[int] = None
     use_retriever: bool = False
     context_type: str = "none"
+    prompt_template: str = "Question: {question}\nAnswer:"  # default prompt
     model: Optional[Any] = None
 
 class ExperimentRunner:
@@ -74,6 +75,9 @@ class ExperimentRunner:
                     "max_samples": self.config.max_samples,
                     "use_retriever": self.config.use_retriever,
                     "context_type": self.config.context_type
+                },
+                "prompt": {
+                    "template": self.config.prompt_template
                 }
             }
             
@@ -104,6 +108,9 @@ class ExperimentRunner:
                     "max_samples": self.config.max_samples,
                     "use_retriever": self.config.use_retriever,
                     "context_type": self.config.context_type
+                },
+                "prompt": {
+                    "template": self.config.prompt_template
                 }
             }
             # Конвертируем в обычные Python типы
@@ -133,6 +140,16 @@ class ExperimentRunner:
         
         # Initial memory state
         self.memory_tracker.log_memory("system", "experiment_start")
+        
+        # Log prompt template from config
+        if hasattr(self.logger, 'report_text'):
+            self.logger.report_text("📝 Шаблон промпта:")
+            self.logger.report_text("")
+            self.logger.report_text("```")
+            self.logger.report_text(self.config.prompt_template)
+            self.logger.report_text("```")
+        else:
+            self.logger.info(f"Prompt template: {self.config.prompt_template}")
         
         # Log basic info as single values (не создают графики)
         if hasattr(self.logger, 'report_single_value'):
@@ -164,12 +181,39 @@ class ExperimentRunner:
             self.logger.report_single_value("duration_seconds", duration)
         self.logger.report_text(f"⏱️ Время выполнения: {duration:.2f} секунд")
         
+        # Добавляем информацию о памяти и размерах в метрики
+        metrics['duration_seconds'] = duration
+        metrics['model_size_bytes'] = model.get_model_size()
+        metrics['model_size_mb'] = model.get_model_size() / (1024 * 1024)
+        
+        if retriever is not None:
+            metrics['retriever_index_size_bytes'] = retriever.get_index_size()
+            metrics['retriever_index_size_mb'] = retriever.get_index_size() / (1024 * 1024)
+        else:
+            metrics['retriever_index_size_bytes'] = 0
+            metrics['retriever_index_size_mb'] = 0
+        
         # Сохраняем результаты
         self._save_results(metrics)
         
         # Финальное состояние памяти и сохранение лога
         self.memory_tracker.log_memory("system", "experiment_end")
         self.memory_tracker.save_log()
+        
+        # Добавляем информацию о пиковом использовании памяти в метрики
+        if self.memory_tracker.peak_stats:
+            peak_memory = self.memory_tracker.peak_stats.to_dict()
+            metrics.update(peak_memory)
+            
+            # Логируем пиковую память
+            self.logger.report_text("💾 Пиковое использование памяти:")
+            self.logger.report_text(f"  CPU RAM: {peak_memory['cpu_ram_used_mb']:.2f} MB")
+            if peak_memory['gpu_ram_peak_mb'] > 0:
+                self.logger.report_text(f"  GPU RAM (peak): {peak_memory['gpu_ram_peak_mb']:.2f} MB")
+                self.logger.report_text(f"  GPU RAM (reserved): {peak_memory['reserved_gpu_ram_mb']:.2f} MB")
+        
+        # Пересохраняем результаты с обновленными метриками
+        self._save_results(metrics)
         
         # Сохраняем предсказания и загружаем как артефакт
         self.predictions_tracker.save_predictions()
@@ -178,6 +222,8 @@ class ExperimentRunner:
         self.logger.report_text("✅ Эксперимент успешно завершен!")
         self.logger.report_text(f"📈 Токен-реколл: {metrics.get('token_recall', 0):.4f}")
         self.logger.report_text(f"📊 Количество примеров: {metrics.get('num_examples', 0)}")
+        self.logger.report_text(f"📦 Размер модели: {metrics.get('model_size_mb', 0):.2f} MB")
+        self.logger.report_text(f"🔍 Размер индекса RAG: {metrics.get('retriever_index_size_mb', 0):.2f} MB")
         
     def _get_context(self, item: DatasetItem, retriever: Optional[BaseRetriever]) -> List[str]:
         """Get context based on experiment mode."""
@@ -200,6 +246,8 @@ class ExperimentRunner:
         """Evaluate model performance using token recall metric."""
         recalls = []
         processed = 0
+        logged_prompt_examples = 0  # Track how many prompt examples we've logged
+        max_prompt_examples = 3  # Log first 3 prompt examples
         
         # Get total number of examples for progress tracking
         eval_data = list(dataset.get_eval_data())
@@ -229,8 +277,20 @@ class ExperimentRunner:
             # Generate answer
             predicted_answer = model.generate(
                 prompt=item.question,
-                context=contexts
+                context=contexts,
+                prompt_template=self.config.prompt_template
             )
+            
+            # Log prompt examples for first few items
+            if logged_prompt_examples < max_prompt_examples and hasattr(model, 'last_prompt'):
+                if hasattr(self.logger, 'report_text'):
+                    self.logger.report_text(f"\n💬 Пример промпта #{logged_prompt_examples + 1}:")
+                    self.logger.report_text("```")
+                    self.logger.report_text(model.last_prompt)
+                    self.logger.report_text("```")
+                    self.logger.report_text(f"Сгенерированный ответ: {predicted_answer}")
+                    self.logger.report_text(f"Правильный ответ: {item.answer}")
+                logged_prompt_examples += 1
             
             self.memory_tracker.log_memory("model", "after_generate")
             
@@ -254,7 +314,8 @@ class ExperimentRunner:
                 metadata={
                     'dataset': self.config.dataset_config.get('name', 'unknown'),
                     **item.metadata
-                }
+                },
+                prompt=model.last_prompt if hasattr(model, 'last_prompt') else None
             )
             
             # Log individual example progress (создает график прогресса)

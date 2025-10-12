@@ -6,6 +6,9 @@ use_retriever: false
 context_type: oracle
 max_context_length: 512  # максимальная длина контекста
 
+# Prompt template
+prompt_template: "Context: {context}\n\nQuestion: {question}\nAnswer:"
+
 # Experiment settings
 max_samples: null  # use all samples
 metrics:

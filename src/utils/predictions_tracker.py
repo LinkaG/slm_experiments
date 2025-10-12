@@ -17,6 +17,7 @@ class PredictionItem:
     model_name: str
     token_recall: float
     metadata: Dict  # дополнительная информация
+    prompt: Optional[str] = None  # полный промпт, отправленный в модель
 
 class PredictionsTracker:
     """Tracks and stores model predictions and related data."""
@@ -35,7 +36,8 @@ class PredictionsTracker:
                       context_type: str,
                       model_name: str,
                       token_recall: float,
-                      metadata: Optional[Dict] = None):
+                      metadata: Optional[Dict] = None,
+                      prompt: Optional[str] = None):
         """Add new prediction."""
         item = PredictionItem(
             question_id=question_id,
@@ -46,7 +48,8 @@ class PredictionsTracker:
             context_type=context_type,
             model_name=model_name,
             token_recall=token_recall,
-            metadata=metadata or {}
+            metadata=metadata or {},
+            prompt=prompt
         )
         self.predictions.append(item)
     

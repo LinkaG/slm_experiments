@@ -25,6 +25,7 @@ class HuggingFaceModel(BaseModel):
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.last_prompt = None  # Store last used prompt for logging
         
         # Extract config parameters
         self.model_path = config.get('model_path', 'gpt2')
@@ -85,22 +86,35 @@ class HuggingFaceModel(BaseModel):
             self.logger.error(f"❌ Error loading model: {e}")
             raise
     
-    def generate(self, prompt: str, context: Optional[List[str]] = None) -> str:
+    def generate(self, prompt: str, context: Optional[List[str]] = None, prompt_template: Optional[str] = None) -> str:
         """Generate answer for the given prompt.
         
         Args:
             prompt: Input question/prompt
             context: Optional context (list of strings)
+            prompt_template: Optional custom prompt template (defaults to built-in templates)
             
         Returns:
             Generated answer text
         """
-        # Format input with context if provided
-        if context and len(context) > 0:
-            context_str = "\n".join(context)
-            full_prompt = f"Context: {context_str}\n\nQuestion: {prompt}\nAnswer:"
+        # Format input using prompt template or default behavior
+        if prompt_template:
+            # Use custom prompt template from config
+            if context and len(context) > 0:
+                context_str = "\n".join(context)
+                full_prompt = prompt_template.replace("{context}", context_str).replace("{question}", prompt)
+            else:
+                full_prompt = prompt_template.replace("{question}", prompt)
         else:
-            full_prompt = f"Question: {prompt}\nAnswer:"
+            # Fallback to original behavior
+            if context and len(context) > 0:
+                context_str = "\n".join(context)
+                full_prompt = f"Context: {context_str}\n\nQuestion: {prompt}\nAnswer:"
+            else:
+                full_prompt = f"Question: {prompt}\nAnswer:"
+        
+        # Store last prompt for logging
+        self.last_prompt = full_prompt
         
         try:
             # Tokenize input
@@ -148,4 +162,18 @@ class HuggingFaceModel(BaseModel):
             Model size in bytes
         """
         return sum(p.nelement() * p.element_size() for p in self.model.parameters())
+    
+    def get_prompt_template(self, with_context: bool = False) -> str:
+        """Get prompt template used by the model.
+        
+        Args:
+            with_context: Whether to show template with or without context
+            
+        Returns:
+            Prompt template string
+        """
+        if with_context:
+            return "Context: {context}\n\nQuestion: {question}\nAnswer:"
+        else:
+            return "Question: {question}\nAnswer:"
 

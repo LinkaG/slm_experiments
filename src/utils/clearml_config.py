@@ -153,6 +153,30 @@ def log_experiment_config(logger: Logger, config: Dict[str, Any]) -> None:
             logger.report_text(f"  {section}: {values}")
 
 
+def log_prompt_template(logger: Logger, prompt_template_no_context: str, 
+                        prompt_template_with_context: str, use_context: bool) -> None:
+    """
+    Логирует шаблон промпта, используемый в эксперименте
+    
+    Args:
+        logger: ClearML Logger
+        prompt_template_no_context: Шаблон промпта без контекста
+        prompt_template_with_context: Шаблон промпта с контекстом
+        use_context: Используется ли контекст в текущем эксперименте
+    """
+    logger.report_text("📝 Шаблон промпта:")
+    logger.report_text("")
+    
+    if use_context:
+        logger.report_text("```")
+        logger.report_text(prompt_template_with_context)
+        logger.report_text("```")
+    else:
+        logger.report_text("```")
+        logger.report_text(prompt_template_no_context)
+        logger.report_text("```")
+
+
 def log_predictions_to_clearml(logger: Logger, predictions: list, max_examples: int = 100) -> None:
     """
     Логирует предсказания модели в ClearML
@@ -199,20 +223,87 @@ def log_metrics_to_clearml(logger: Logger, metrics: Dict[str, float]) -> None:
         logger: ClearML Logger
         metrics: Словарь с метриками
     """
+    # Функция для форматирования значений
+    def format_metric_value(key: str, value) -> str:
+        """Форматирует значение метрики в зависимости от её типа."""
+        if not isinstance(value, (int, float)):
+            return str(value)
+        
+        # Байты - целые числа
+        if 'bytes' in key.lower():
+            return f"{int(value):,}"
+        # MB - 2 знака после запятой
+        elif 'mb' in key.lower() or 'ram' in key.lower():
+            return f"{value:.2f}"
+        # Recall и другие метрики качества - 4 знака
+        elif 'recall' in key.lower() or 'precision' in key.lower() or 'f1' in key.lower():
+            return f"{value:.4f}"
+        # Время - 2 знака
+        elif 'time' in key.lower() or 'duration' in key.lower() or 'seconds' in key.lower():
+            return f"{value:.2f}"
+        # Счетчики - целые числа
+        elif 'num' in key.lower() or 'count' in key.lower() or 'examples' in key.lower():
+            return f"{int(value)}"
+        # По умолчанию - 4 знака
+        else:
+            return f"{value:.4f}" if isinstance(value, float) else str(value)
+    
     # Логируем в текстовом виде
     logger.report_text("📊 Финальные результаты эксперимента:")
+    logger.report_text("")
     
-    for metric_name, value in metrics.items():
-        logger.report_text(f"  {metric_name}: {value:.4f}")
+    # Группируем метрики по категориям
+    quality_metrics = {}
+    memory_metrics = {}
+    size_metrics = {}
+    other_metrics = {}
+    
+    for key, value in metrics.items():
+        key_lower = key.lower()
+        if 'recall' in key_lower or 'precision' in key_lower or 'f1' in key_lower:
+            quality_metrics[key] = value
+        elif 'ram' in key_lower or 'memory' in key_lower:
+            memory_metrics[key] = value
+        elif 'size' in key_lower:
+            size_metrics[key] = value
+        else:
+            other_metrics[key] = value
+    
+    # Логируем метрики качества
+    if quality_metrics:
+        logger.report_text("🎯 Метрики качества:")
+        for k, v in quality_metrics.items():
+            logger.report_text(f"  {k}: {format_metric_value(k, v)}")
+        logger.report_text("")
+    
+    # Логируем размеры модели и индекса
+    if size_metrics:
+        logger.report_text("📦 Размеры модели и индекса:")
+        for k, v in size_metrics.items():
+            logger.report_text(f"  {k}: {format_metric_value(k, v)}")
+        logger.report_text("")
+    
+    # Логируем использование памяти
+    if memory_metrics:
+        logger.report_text("💾 Пиковое использование памяти:")
+        for k, v in memory_metrics.items():
+            logger.report_text(f"  {k}: {format_metric_value(k, v)} MB")
+        logger.report_text("")
+    
+    # Логируем остальные метрики
+    if other_metrics:
+        logger.report_text("📋 Прочие метрики:")
+        for k, v in other_metrics.items():
+            logger.report_text(f"  {k}: {format_metric_value(k, v)}")
     
     # Создаем таблицу для вкладки PLOTS
     try:
         import pandas as pd
         
-        # Создаем DataFrame с метриками
+        # Создаем DataFrame с метриками (красиво отформатированный)
         df = pd.DataFrame([{
             'Metric': k,
-            'Value': f"{v:.4f}" if isinstance(v, float) else str(v)
+            'Value': format_metric_value(k, v)
         } for k, v in metrics.items()])
         
         # Логируем как таблицу в PLOTS
@@ -228,7 +319,8 @@ def log_metrics_to_clearml(logger: Logger, metrics: Dict[str, float]) -> None:
     
     # Логируем каждую метрику как single value scalar (без графика)
     for metric_name, value in metrics.items():
-        logger.report_single_value(
-            name=metric_name,
-            value=value
-        )
+        if isinstance(value, (int, float)):
+            logger.report_single_value(
+                name=metric_name,
+                value=value
+            )

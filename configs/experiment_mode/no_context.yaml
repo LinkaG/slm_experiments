@@ -5,6 +5,9 @@ description: "Evaluate model's zero-shot question answering ability without any 
 use_retriever: false
 context_type: none
 
+# Prompt template
+prompt_template: "Question: {question}\nAnswer:"
+
 # Experiment settings
 max_samples: null  # use all samples
 metrics:

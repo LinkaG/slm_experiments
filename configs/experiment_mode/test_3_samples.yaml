@@ -5,6 +5,9 @@ description: "Quick test on 3 samples to verify model loading"
 use_retriever: false
 context_type: none
 
+# Prompt template
+prompt_template: "Question: {question}\nAnswer:"
+
 # Experiment settings
 max_samples: 3  # only 3 samples for quick test
 metrics:

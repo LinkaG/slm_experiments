@@ -3,5 +3,9 @@ name: test_10_samples
 max_samples: 10
 use_retriever: false
 context_type: none
+
+# Prompt template
+prompt_template: "Question: {question}\nAnswer:"
+
 metrics:
   - token_recall

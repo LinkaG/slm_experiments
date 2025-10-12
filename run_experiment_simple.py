@@ -116,7 +116,8 @@ def run_experiment_with_config(use_clearml=True, env_file='.env'):
             model=model,  # Передаем модель
             max_samples=config.experiment_mode.get('max_samples'),
             use_retriever=config.experiment_mode.get('use_retriever', False),
-            context_type=config.experiment_mode.get('context_type', 'none')
+            context_type=config.experiment_mode.get('context_type', 'none'),
+            prompt_template=config.experiment_mode.get('prompt_template', 'Question: {question}\nAnswer:')
         )
 
         runner = ExperimentRunner(experiment_config)
