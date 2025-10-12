@@ -56,7 +56,7 @@ cover/
 *.pot
 
 # Django stuff:
-*.log
+# *.log  # Moved to "Logs and outputs" section
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -165,13 +165,13 @@ cython_debug/
 .vscode/
 
 # Machine Learning specific
-# Data files
+# Data files (but keep configs!)
 data/raw/
 data/processed/
 data/external/
-*.csv
-*.json
-*.jsonl
+data/**/*.csv
+data/**/*.json
+data/**/*.jsonl
 *.parquet
 *.pkl
 *.pickle
@@ -180,18 +180,24 @@ data/external/
 *.npy
 *.npz
 
-# Model files
-models/
+# But include important config files
+!configs/**/*.yaml
+!configs/**/*.json
+!*.md
+!pyproject.toml
+!poetry.lock
+
+# Model checkpoints and weights (NOT source code!)
+# Note: We keep src/models/ source code, only ignore downloaded model files
 *.model
-*.pkl
 *.joblib
-*.h5
-*.hdf5
 *.ckpt
 *.pt
 *.pth
 *.bin
 *.safetensors
+# Ignore downloaded HuggingFace models cache
+.cache/huggingface/
 
 # Logs and outputs
 logs/
@@ -202,6 +208,9 @@ runs/
 wandb/
 tensorboard/
 mlruns/
+*.log
+experiment.log
+test_*.log
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
