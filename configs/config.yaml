@@ -1,6 +1,6 @@
 defaults:
-  - model: smollm2_135m
-  - dataset: local_nq  # локальный датасет Natural Questions (3610 примеров)
+  - model: qwen_0.6b
+  - dataset: local_simple_qa
   - experiment_mode: no_context  # полный эксперимент на всех данных
   - _self_
 

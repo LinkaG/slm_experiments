@@ -1,9 +1,0 @@
-name: natural_questions
-type: nq
-aws_access_key_id: ${oc.env:AWS_ACCESS_KEY_ID}
-aws_secret_access_key: ${oc.env:AWS_SECRET_ACCESS_KEY}
-region_name: ${oc.env:AWS_REGION}
-bucket: your-dataset-bucket
-train_key: datasets/nq/train.json
-eval_key: datasets/nq/eval.json
-cache_dir: .cache/datasets

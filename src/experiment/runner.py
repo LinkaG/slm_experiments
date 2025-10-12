@@ -78,7 +78,12 @@ class ExperimentRunner:
             }
             
             # Конвертируем весь словарь целиком
-            config_plain = OmegaConf.to_container(config_dict, resolve=True)
+            # Проверяем, нужно ли конвертировать (если элементы уже dict, то пропускаем)
+            try:
+                config_plain = OmegaConf.to_container(config_dict, resolve=True)
+            except (ValueError, TypeError):
+                # Если config_dict уже содержит обычные dict, используем его как есть
+                config_plain = config_dict
             
             # Логируем конфигурацию эксперимента
             self.task.connect(config_plain)
@@ -102,7 +107,11 @@ class ExperimentRunner:
                 }
             }
             # Конвертируем в обычные Python типы
-            full_config_plain = OmegaConf.to_container(full_config, resolve=True)
+            try:
+                full_config_plain = OmegaConf.to_container(full_config, resolve=True)
+            except (ValueError, TypeError):
+                # Если full_config уже содержит обычные dict, используем его как есть
+                full_config_plain = full_config
             log_experiment_config(self.logger, full_config_plain)
         else:
             # Режим без ClearML

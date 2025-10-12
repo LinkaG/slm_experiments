@@ -418,6 +418,9 @@ tail -f experiment.log
 # Проверка процесса
 ps aux | grep python
 
+# Или точнее
+ps aux | grep -E "(python|run_experiment)" | grep -v grep
+
 # Мониторинг GPU
 watch -n 1 nvidia-smi
 ```
