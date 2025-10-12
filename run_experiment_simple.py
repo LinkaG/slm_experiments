@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Универсальный скрипт для запуска экспериментов с использованием configs/config.yaml
+Поддерживает логирование в ClearML
 """
 
 import logging
 import traceback
+import argparse
 from pathlib import Path
 from omegaconf import OmegaConf
 import json
@@ -31,10 +33,33 @@ def setup_logging():
     )
     return logging.getLogger(__name__)
 
-def run_experiment_with_config():
+
+def parse_arguments():
+    """Парсинг аргументов командной строки."""
+    parser = argparse.ArgumentParser(description='Запуск экспериментов с малыми языковыми моделями')
+    parser.add_argument('--use-clearml', action='store_true', default=True,
+                        help='Использовать ClearML для логирования (по умолчанию: True)')
+    parser.add_argument('--no-clearml', action='store_true',
+                        help='Отключить ClearML логирование')
+    parser.add_argument('--env-file', type=str, default='.env',
+                        help='Путь к файлу .env с настройками ClearML')
+    
+    # Добавляем поддержку Hydra аргументов
+    parser.add_argument('--config-path', type=str, default='configs',
+                        help='Путь к конфигурационным файлам')
+    parser.add_argument('--config-name', type=str, default='config',
+                        help='Имя конфигурационного файла')
+    
+    return parser.parse_args()
+
+def run_experiment_with_config(use_clearml=True, env_file='.env'):
     """Запуск эксперимента с использованием configs/config.yaml"""
     logger = setup_logging()
-    logger.info("🚀 Запуск эксперимента с основной конфигурацией")
+    
+    if use_clearml:
+        logger.info("🚀 Запуск эксперимента с ClearML логированием")
+    else:
+        logger.info("🚀 Запуск эксперимента без ClearML логирования")
 
     try:
         # Загружаем основную конфигурацию с помощью Hydra
@@ -96,49 +121,8 @@ def run_experiment_with_config():
 
         runner = ExperimentRunner(experiment_config)
         
-        # Переопределяем setup_experiment для отключения ClearML
-        def mock_setup_experiment(self):
-            self.config.output_dir.mkdir(parents=True, exist_ok=True)
-            self.logger.info(f"🚀 Начало эксперимента (без ClearML)")
-            self.logger.info(f"📁 Директория результатов: {self.config.output_dir}")
-            self.logger.info(f"🤖 Модель: {self.config.model_config.get('name', 'unknown')}")
-            self.logger.info(f"📊 Датасет: {self.config.dataset_config.get('name', 'unknown')}")
-            self.logger.info(f"🔍 Режим: {self.config.context_type}")
-
-        ExperimentRunner.setup_experiment = mock_setup_experiment
-        
-        # Переопределяем _save_results для сохранения только локально
-        def mock_save_results(self, metrics):
-            results_file = self.config.output_dir / "results.json"
-            with open(results_file, "w", encoding='utf-8') as f:
-                json.dump(metrics, f, ensure_ascii=False, indent=2)
-            self.logger.info(f"✅ Результаты сохранены в: {results_file}")
-            
-            # Добавляем дополнительные метрики для вывода
-            self.logger.info(f"📊 Token Recall: {metrics.get('token_recall', 0.0):.3f}")
-            self.logger.info(f"📈 Количество примеров: {metrics.get('num_examples', 0)}")
-            self.logger.info(f"⏱️ Время выполнения: {metrics.get('duration_seconds', 0.0):.2f} секунд")
-
-        ExperimentRunner._save_results = mock_save_results
-        
-        # Переопределяем logger для отключения ClearML
-        def mock_logger_report_scalar(self, title, series, value, iteration=None):
-            # Используем стандартный logger вместо self.logger
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"📊 {title}/{series}: {value}")
-        
-        def mock_logger_report_text(self, text):
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"📝 {text}")
-        
-        # Мокаем logger
-        import types
-        runner.logger.report_scalar = types.MethodType(mock_logger_report_scalar, runner.logger)
-        runner.logger.report_text = types.MethodType(mock_logger_report_text, runner.logger)
-
-        runner.run(model, retriever, dataset)
+        # Запускаем эксперимент с указанными параметрами
+        runner.run(model, retriever, dataset, use_clearml=use_clearml)
 
         logger.info("🎉 Эксперимент завершен успешно!")
         logger.info(f"📁 Результаты сохранены в {output_dir}/")
@@ -151,4 +135,11 @@ def run_experiment_with_config():
     return True
 
 if __name__ == "__main__":
-    run_experiment_with_config()
+    # Парсим аргументы командной строки
+    args = parse_arguments()
+    
+    # Определяем, использовать ли ClearML
+    use_clearml = args.use_clearml and not args.no_clearml
+    
+    # Запускаем эксперимент
+    run_experiment_with_config(use_clearml=use_clearml, env_file=args.env_file)

@@ -1,7 +1,7 @@
 defaults:
   - model: smollm2_135m
-  - dataset: rag_nq
-  - experiment_mode: no_context  # default mode
+  - dataset: local_nq  # локальный датасет Natural Questions (3610 примеров)
+  - experiment_mode: no_context  # полный эксперимент на всех данных
   - _self_
 
 experiment:
@@ -12,6 +12,7 @@ experiment:
   seed: 42
   log_predictions: true  # сохранять предсказания модели
   save_contexts: true   # сохранять использованные контексты
+  cleanup_local_artifacts: false  # удалять локальные артефакты после загрузки в S3
 
 hydra:
   run:

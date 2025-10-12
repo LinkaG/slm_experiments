@@ -20,8 +20,8 @@ def test_data_loading():
         'name': 'local_natural_questions',
         'type': 'nq',
         'use_local': True,
-        'train_path': 'data/nq/nq_converted_eval.json',
-        'eval_path': 'data/nq/nq_converted_eval.json',
+        'train_path': 'data/nq/nq_full_dataset.json',
+        'eval_path': 'data/nq/nq_full_dataset.json',
         'cache_dir': '.cache/datasets'
     }
     

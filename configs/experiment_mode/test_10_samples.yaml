@@ -1,0 +1,7 @@
+# Конфигурация для тестового эксперимента на 10 сэмплах
+name: test_10_samples
+max_samples: 10
+use_retriever: false
+context_type: none
+metrics:
+  - token_recall

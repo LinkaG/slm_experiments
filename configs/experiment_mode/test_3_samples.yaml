@@ -1,0 +1,12 @@
+name: test_3_samples
+description: "Quick test on 3 samples to verify model loading"
+
+# Retriever settings
+use_retriever: false
+context_type: none
+
+# Experiment settings
+max_samples: 3  # only 3 samples for quick test
+metrics:
+  - token_recall
+

@@ -6,6 +6,7 @@ from statistics import mean
 import json
 import time
 from clearml import Task, Logger
+from omegaconf import OmegaConf
 
 from ..models.base import BaseModel
 from ..retrievers.base import BaseRetriever
@@ -13,6 +14,15 @@ from ..data.base import BaseDataset, DatasetItem
 from .metrics import TokenRecallCalculator
 from ..utils.memory_tracker import MemoryTracker
 from ..utils.predictions_tracker import PredictionsTracker
+from ..utils.logger_wrapper import LoggerWrapper
+from ..utils.clearml_config import (
+    setup_clearml_environment, 
+    create_clearml_task, 
+    get_clearml_logger,
+    log_experiment_config,
+    log_predictions_to_clearml,
+    log_metrics_to_clearml
+)
 
 @dataclass
 class ExperimentConfig:
@@ -38,64 +48,98 @@ class ExperimentRunner:
         self.memory_tracker = MemoryTracker(Path(config.output_dir))
         self.predictions_tracker = PredictionsTracker(Path(config.output_dir))
         
-    def setup_experiment(self):
+    def setup_experiment(self, use_clearml: bool = True):
         """Initialize ClearML, create directories, etc."""
-        self.task = Task.init(
-            project_name="slm-experiments",
-            task_name=self.config.name,
-            auto_connect_frameworks=False  # Отключаем автоматическое подключение фреймворков
-        )
-        
-        # Логируем конфигурацию эксперимента
-        self.task.connect({
-            "model": self.config.model_config,
-            "retriever": self.config.retriever_config,
-            "dataset": self.config.dataset_config,
-            "metrics": self.config.metrics_config
-        })
-        
-        # Настраиваем логирование
-        self.logger = Logger.current_logger()
+        if use_clearml:
+            # Настраиваем ClearML с использованием .env файла
+            setup_clearml_environment()
+            
+            # Создаем ClearML задачу
+            self.task = create_clearml_task(
+                project_name="slm-experiments",
+                task_name=self.config.name,
+                tags=[self.config.model_config.get('name', 'unknown'), 
+                      self.config.dataset_config.get('name', 'unknown'),
+                      self.config.context_type]
+            )
+            
+            # Конвертируем OmegaConf объекты в обычные Python типы для ClearML
+            config_dict = {
+                "model": self.config.model_config,
+                "retriever": self.config.retriever_config,
+                "dataset": self.config.dataset_config,
+                "metrics": self.config.metrics_config,
+                "experiment": {
+                    "name": self.config.name,
+                    "max_samples": self.config.max_samples,
+                    "use_retriever": self.config.use_retriever,
+                    "context_type": self.config.context_type
+                }
+            }
+            
+            # Конвертируем весь словарь целиком
+            config_plain = OmegaConf.to_container(config_dict, resolve=True)
+            
+            # Логируем конфигурацию эксперимента
+            self.task.connect(config_plain)
+            
+            # Настраиваем логирование
+            clearml_logger = get_clearml_logger()
+            self.logger = LoggerWrapper(clearml_logger)
+            
+            # Логируем полную конфигурацию
+            full_config = {
+                "model": self.config.model_config,
+                "retriever": self.config.retriever_config,
+                "dataset": self.config.dataset_config,
+                "metrics": self.config.metrics_config,
+                "experiment": {
+                    "name": self.config.name,
+                    "output_dir": str(self.config.output_dir),
+                    "max_samples": self.config.max_samples,
+                    "use_retriever": self.config.use_retriever,
+                    "context_type": self.config.context_type
+                }
+            }
+            # Конвертируем в обычные Python типы
+            full_config_plain = OmegaConf.to_container(full_config, resolve=True)
+            log_experiment_config(self.logger, full_config_plain)
+        else:
+            # Режим без ClearML
+            self.task = None
+            python_logger = logging.getLogger(__name__)
+            self.logger = LoggerWrapper(python_logger)
+            self.logger.info("🚀 Начало эксперимента (без ClearML)")
+            self.logger.info(f"📁 Директория результатов: {self.config.output_dir}")
+            self.logger.info(f"🤖 Модель: {self.config.model_config.get('name', 'unknown')}")
+            self.logger.info(f"📊 Датасет: {self.config.dataset_config.get('name', 'unknown')}")
+            self.logger.info(f"🔍 Режим: {self.config.context_type}")
         
         # Создаем директорию для результатов
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Логируем информацию о начале эксперимента
-        self.logger.report_text("🚀 Начало эксперимента")
-        self.logger.report_text(f"📁 Директория результатов: {self.config.output_dir}")
-        self.logger.report_text(f"🤖 Модель: {self.config.model_config.get('name', 'unknown')}")
-        self.logger.report_text(f"🔍 Ретривер: {self.config.retriever_config.get('name', 'unknown')}")
-        self.logger.report_text(f"📊 Датасет: {self.config.dataset_config.get('name', 'unknown')}")
-        
-    def run(self, model: BaseModel, retriever: BaseRetriever, dataset: BaseDataset):
+    def run(self, model: BaseModel, retriever: BaseRetriever, dataset: BaseDataset, use_clearml: bool = True):
         """Run the experiment."""
-        self.setup_experiment()
+        self.setup_experiment(use_clearml=use_clearml)
         
         # Initial memory state
         self.memory_tracker.log_memory("system", "experiment_start")
         
-        # Log basic info
-        self.logger.report_scalar(
-            title="model",
-            series="size",
-            value=model.get_model_size(),
-            iteration=0
-        )
-        if retriever is not None:
-            self.logger.report_scalar(
-                title="retriever",
-                series="index_size",
-                value=retriever.get_index_size(),
-                iteration=0
-            )
-        # Log dataset stats
-        for key, value in dataset.get_dataset_stats().items():
-            self.logger.report_scalar(
-                title="dataset",
-                series=key,
-                value=value,
-                iteration=0
-            )
+        # Log basic info as single values (не создают графики)
+        if hasattr(self.logger, 'report_single_value'):
+            self.logger.report_single_value("model_size_bytes", model.get_model_size())
+            if retriever is not None:
+                self.logger.report_single_value("retriever_index_size", retriever.get_index_size())
+            # Log dataset stats
+            for key, value in dataset.get_dataset_stats().items():
+                self.logger.report_single_value(f"dataset_{key}", value)
+        else:
+            # Fallback для режима без ClearML
+            self.logger.info(f"Model size: {model.get_model_size()}")
+            if retriever is not None:
+                self.logger.info(f"Retriever index size: {retriever.get_index_size()}")
+            for key, value in dataset.get_dataset_stats().items():
+                self.logger.info(f"Dataset {key}: {value}")
         
         # Запускаем оценку
         self.logger.report_text("🔄 Начинаем оценку модели...")
@@ -107,22 +151,9 @@ class ExperimentRunner:
         duration = end_time - start_time
         
         # Логируем время выполнения
-        self.logger.report_scalar(
-            title="experiment",
-            series="duration_seconds",
-            value=duration,
-            iteration=0
-        )
+        if hasattr(self.logger, 'report_single_value'):
+            self.logger.report_single_value("duration_seconds", duration)
         self.logger.report_text(f"⏱️ Время выполнения: {duration:.2f} секунд")
-        
-        # Логируем результаты
-        for metric_name, value in metrics.items():
-            self.logger.report_scalar(
-                title="metrics",
-                series=metric_name,
-                value=value,
-                iteration=0
-            )
         
         # Сохраняем результаты
         self._save_results(metrics)
@@ -217,13 +248,14 @@ class ExperimentRunner:
                 }
             )
             
-            # Log individual example
-            self.logger.report_scalar(
-                title="examples",
-                series="token_recall",
-                value=recall,
-                iteration=len(recalls)
-            )
+            # Log individual example progress (создает график прогресса)
+            if hasattr(self.logger, 'report_scalar'):
+                self.logger.report_scalar(
+                    title="Training Progress",
+                    series="token_recall",
+                    value=recall,
+                    iteration=processed
+                )
             
             # Increment processed counter
             processed += 1
@@ -249,26 +281,73 @@ class ExperimentRunner:
         with open(results_file, "w") as f:
             json.dump(metrics, f, indent=2)
         
-        # Загружаем результаты как артефакт в ClearML
-        self.task.upload_artifact(
-            name="experiment_results",
-            artifact_object=results_file,
-            metadata={
-                "experiment_name": self.config.name,
-                "model": self.config.model_config.get('name', 'unknown'),
-                "dataset": self.config.dataset_config.get('name', 'unknown'),
-                "retriever": self.config.retriever_config.get('name', 'unknown'),
-                "timestamp": time.time()
-            }
-        )
-        
-        # Логируем финальные метрики
-        self.logger.report_text("📊 Финальные результаты эксперимента:")
-        for metric_name, value in metrics.items():
-            self.logger.report_text(f"  {metric_name}: {value:.4f}")
-            self.logger.report_scalar(
-                title="final_metrics",
-                series=metric_name,
-                value=value,
-                iteration=0
+        if self.task is not None:
+            # Устанавливаем output_uri для артефактов в S3
+            import os
+            s3_output_uri = f"s3://clearml-artifacts/{self.config.name}"
+            
+            # Загружаем результаты как артефакт в ClearML
+            self.task.upload_artifact(
+                name="experiment_results",
+                artifact_object=results_file,
+                metadata={
+                    "experiment_name": self.config.name,
+                    "model": self.config.model_config.get('name', 'unknown'),
+                    "dataset": self.config.dataset_config.get('name', 'unknown'),
+                    "retriever": self.config.retriever_config.get('name', 'unknown'),
+                    "timestamp": time.time()
+                }
             )
+            
+            # Загружаем предсказания как артефакт
+            predictions_file = self.config.output_dir / "predictions.json"
+            if predictions_file.exists():
+                self.task.upload_artifact(
+                    name="model_predictions",
+                    artifact_object=predictions_file,
+                    metadata={
+                        "experiment_name": self.config.name,
+                        "num_predictions": len(self.predictions_tracker.predictions),
+                        "timestamp": time.time()
+                    }
+                )
+            
+            # Также загружаем memory usage если есть
+            memory_file = self.config.output_dir / "memory_usage.json"
+            if memory_file.exists():
+                self.task.upload_artifact(
+                    name="memory_usage",
+                    artifact_object=memory_file,
+                    metadata={
+                        "experiment_name": self.config.name,
+                        "timestamp": time.time()
+                    }
+                )
+            
+            # Опционально удаляем локальные артефакты для экономии места
+            cleanup_local = self.config.model_config.get('cleanup_local_artifacts', False)
+            if cleanup_local:
+                self.logger.info("🗑️  Очистка локальных артефактов после загрузки в S3...")
+                import os
+                try:
+                    if results_file.exists():
+                        os.remove(results_file)
+                    if predictions_file.exists():
+                        os.remove(predictions_file)
+                    if memory_file.exists():
+                        os.remove(memory_file)
+                    self.logger.info("✅ Локальные артефакты удалены (сохранены в S3)")
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Не удалось удалить локальные артефакты: {e}")
+            
+            # Логируем предсказания в ClearML
+            if hasattr(self.predictions_tracker, 'predictions') and self.predictions_tracker.predictions:
+                log_predictions_to_clearml(self.logger, self.predictions_tracker.predictions)
+            
+            # Логируем метрики в ClearML
+            log_metrics_to_clearml(self.logger, metrics)
+        else:
+            # Режим без ClearML - только локальное логирование
+            self.logger.info("📊 Финальные результаты эксперимента:")
+            for metric_name, value in metrics.items():
+                self.logger.info(f"  {metric_name}: {value:.4f}")
