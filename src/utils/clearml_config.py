@@ -24,8 +24,10 @@ def load_clearml_config(env_file: Optional[str] = None) -> Dict[str, str]:
         project_root = Path(__file__).parent.parent.parent
         env_file = project_root / ".env"
     
-    if not Path(env_file).exists():
-        raise FileNotFoundError(f"Файл .env не найден: {env_file}")
+    env_path = Path(env_file)
+    if not env_path.exists():
+        # Если .env не найден, возвращаем пустой словарь (работа без ClearML)
+        return {}
     
     # Загружаем переменные окружения
     load_dotenv(env_file)
@@ -64,25 +66,13 @@ def setup_clearml_environment(env_file: Optional[str] = None) -> None:
     """
     config = load_clearml_config(env_file)
     
+    if not config:
+        # Если конфигурация пустая (нет .env или нет параметров), ничего не делаем
+        return
+    
     # Устанавливаем переменные окружения для ClearML
     for key, value in config.items():
         os.environ[key] = value
-    
-    # Дополнительные настройки для S3
-    if 'CLEARML_S3_ENDPOINT' in config:
-        os.environ['CLEARML_S3_ENDPOINT'] = config['CLEARML_S3_ENDPOINT']
-    if 'CLEARML_S3_BUCKET' in config:
-        os.environ['CLEARML_S3_BUCKET'] = config['CLEARML_S3_BUCKET']
-    if 'CLEARML_S3_ACCESS_KEY' in config:
-        os.environ['CLEARML_S3_ACCESS_KEY'] = config['CLEARML_S3_ACCESS_KEY']
-    if 'CLEARML_S3_SECRET_KEY' in config:
-        os.environ['CLEARML_S3_SECRET_KEY'] = config['CLEARML_S3_SECRET_KEY']
-    if 'CLEARML_S3_REGION' in config:
-        os.environ['CLEARML_S3_REGION'] = config['CLEARML_S3_REGION']
-    if 'CLEARML_S3_PATH_STYLE' in config:
-        os.environ['CLEARML_S3_PATH_STYLE'] = config['CLEARML_S3_PATH_STYLE']
-    if 'CLEARML_S3_VERIFY_SSL' in config:
-        os.environ['CLEARML_S3_VERIFY_SSL'] = config['CLEARML_S3_VERIFY_SSL']
 
 
 def create_clearml_task(

@@ -3,6 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import List, Optional
 import logging
+import re
 
 from .base import BaseModel
 
@@ -32,6 +33,8 @@ class HuggingFaceModel(BaseModel):
         self.max_length = config.get('max_length', 512)
         self.temperature = config.get('temperature', 0.7)
         self.top_p = config.get('top_p', 0.9)
+        self.repetition_penalty = config.get('repetition_penalty', 1.1)  # Предотвращает зацикливание
+        self.max_new_tokens = config.get('max_new_tokens', 150)  # Максимальная длина ответа
         self.batch_size = config.get('batch_size', 32)
         
         # Device configuration
@@ -127,15 +130,32 @@ class HuggingFaceModel(BaseModel):
             
             # Generate
             with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=100,  # Maximum length of generated answer
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                )
+                # Для низкой температуры используем более детерминированную генерацию
+                use_sampling = self.temperature > 0.1
+                
+                # Создаем словарь параметров для генерации
+                generate_kwargs = dict(inputs)  # Копируем inputs
+                generate_kwargs.update({
+                    'max_new_tokens': self.max_new_tokens,
+                    'min_new_tokens': 1,  # Минимальная длина ответа
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'repetition_penalty': self.repetition_penalty,
+                    'no_repeat_ngram_size': 2,  # Предотвращает повторение биграмм
+                })
+                
+                if use_sampling:
+                    # Сэмплирование для температуры > 0.1
+                    generate_kwargs.update({
+                        'temperature': self.temperature,
+                        'top_p': self.top_p,
+                        'do_sample': True,
+                    })
+                else:
+                    # Greedy decoding для очень низкой температуры
+                    generate_kwargs['do_sample'] = False
+                
+                outputs = self.model.generate(**generate_kwargs)
             
             # Decode output
             generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -146,8 +166,20 @@ class HuggingFaceModel(BaseModel):
             else:
                 answer = generated_text[len(full_prompt):].strip()
             
-            # Clean up the answer (take first line or sentence)
-            answer = answer.split('\n')[0].strip()
+            # Clean up the answer - убираем лишние пробелы и переносы строк
+            # НЕ обрезаем по первой строке, так как ответ может быть многострочным
+            answer = answer.strip()
+            
+            # Убираем повторяющиеся пробелы и переносы строк
+            answer = re.sub(r'\s+', ' ', answer).strip()
+            
+            # Логируем полный сгенерированный текст для отладки (первые несколько раз)
+            if not hasattr(self, '_debug_log_count'):
+                self._debug_log_count = 0
+            if self._debug_log_count < 3:
+                self.logger.debug(f"Полный сгенерированный текст: {generated_text}")
+                self.logger.debug(f"Извлеченный ответ: {answer}")
+                self._debug_log_count += 1
             
             return answer if answer else "No answer generated"
             

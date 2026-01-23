@@ -13,6 +13,8 @@ from omegaconf import OmegaConf
 import json
 import time
 from statistics import mean
+import os
+from dotenv import load_dotenv
 
 # Импортируем компоненты проекта
 from src.experiment.runner import ExperimentRunner, ExperimentConfig
@@ -37,8 +39,8 @@ def setup_logging():
 def parse_arguments():
     """Парсинг аргументов командной строки."""
     parser = argparse.ArgumentParser(description='Запуск экспериментов с малыми языковыми моделями')
-    parser.add_argument('--use-clearml', action='store_true', default=True,
-                        help='Использовать ClearML для логирования (по умолчанию: True)')
+    parser.add_argument('--use-clearml', action='store_true', default=False,
+                        help='Использовать ClearML для логирования (по умолчанию: читать из .env)')
     parser.add_argument('--no-clearml', action='store_true',
                         help='Отключить ClearML логирование')
     parser.add_argument('--env-file', type=str, default='.env',
@@ -52,14 +54,30 @@ def parse_arguments():
     
     return parser.parse_args()
 
-def run_experiment_with_config(use_clearml=True, env_file='.env'):
-    """Запуск эксперимента с использованием configs/config.yaml"""
+def run_experiment_with_config(use_clearml=None, env_file='.env'):
+    """
+    Запуск эксперимента с использованием configs/config.yaml
+    
+    Args:
+        use_clearml: Использовать ClearML (None = читать из .env)
+        env_file: Путь к .env файлу
+    """
     logger = setup_logging()
+    
+    # Загружаем .env файл
+    env_path = Path(env_file)
+    if env_path.exists():
+        load_dotenv(env_path)
+    
+    # Определяем, использовать ли ClearML
+    if use_clearml is None:
+        # Читаем из .env, по умолчанию False (без ClearML)
+        use_clearml = os.getenv('USE_CLEARML', 'false').lower() in ('true', '1', 'yes')
     
     if use_clearml:
         logger.info("🚀 Запуск эксперимента с ClearML логированием")
     else:
-        logger.info("🚀 Запуск эксперимента без ClearML логирования")
+        logger.info("🚀 Запуск эксперимента без ClearML (локальное сохранение результатов)")
 
     try:
         # Загружаем основную конфигурацию с помощью Hydra
@@ -140,7 +158,15 @@ if __name__ == "__main__":
     args = parse_arguments()
     
     # Определяем, использовать ли ClearML
-    use_clearml = args.use_clearml and not args.no_clearml
+    # Если явно указан --use-clearml или --no-clearml, используем их
+    # Иначе передаем None, чтобы читать из .env
+    if args.no_clearml:
+        use_clearml = False
+    elif args.use_clearml:
+        use_clearml = True
+    else:
+        # Не указано явно - читаем из .env
+        use_clearml = None
     
     # Запускаем эксперимент
     run_experiment_with_config(use_clearml=use_clearml, env_file=args.env_file)

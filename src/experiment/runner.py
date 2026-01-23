@@ -7,6 +7,11 @@ import json
 import time
 from clearml import Task, Logger
 from omegaconf import OmegaConf
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
 
 from ..models.base import BaseModel
 from ..retrievers.base import BaseRetriever
@@ -15,6 +20,7 @@ from .metrics import TokenRecallCalculator
 from ..utils.memory_tracker import MemoryTracker
 from ..utils.predictions_tracker import PredictionsTracker
 from ..utils.logger_wrapper import LoggerWrapper
+from ..utils.local_logger import LocalLogger
 from ..utils.clearml_config import (
     setup_clearml_environment, 
     create_clearml_task, 
@@ -45,12 +51,15 @@ class ExperimentRunner:
     def __init__(self, config: ExperimentConfig):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.metric_calculator = TokenRecallCalculator()
+        # Инициализируем metric_calculator позже, когда модель будет загружена
+        # чтобы использовать тот же tokenizer, что и модель
+        self.metric_calculator = None
         self.memory_tracker = MemoryTracker(Path(config.output_dir))
         self.predictions_tracker = PredictionsTracker(Path(config.output_dir))
         
     def setup_experiment(self, use_clearml: bool = True):
         """Initialize ClearML, create directories, etc."""
+        self.use_clearml = use_clearml  # Сохраняем для использования в других методах
         if use_clearml:
             # Настраиваем ClearML с использованием .env файла
             setup_clearml_environment()
@@ -121,15 +130,40 @@ class ExperimentRunner:
                 full_config_plain = full_config
             log_experiment_config(self.logger, full_config_plain)
         else:
-            # Режим без ClearML
+            # Режим без ClearML - используем LocalLogger
             self.task = None
+            self.local_logger = LocalLogger(self.config.output_dir)
             python_logger = logging.getLogger(__name__)
-            self.logger = LoggerWrapper(python_logger)
+            # Объединяем LocalLogger и стандартный logger через wrapper
+            self.logger = LoggerWrapper(self.local_logger)
             self.logger.info("🚀 Начало эксперимента (без ClearML)")
             self.logger.info(f"📁 Директория результатов: {self.config.output_dir}")
             self.logger.info(f"🤖 Модель: {self.config.model_config.get('name', 'unknown')}")
             self.logger.info(f"📊 Датасет: {self.config.dataset_config.get('name', 'unknown')}")
             self.logger.info(f"🔍 Режим: {self.config.context_type}")
+            
+            # Сохраняем конфигурацию в локальный логгер
+            full_config = {
+                "model": self.config.model_config,
+                "retriever": self.config.retriever_config,
+                "dataset": self.config.dataset_config,
+                "metrics": self.config.metrics_config,
+                "experiment": {
+                    "name": self.config.name,
+                    "output_dir": str(self.config.output_dir),
+                    "max_samples": self.config.max_samples,
+                    "use_retriever": self.config.use_retriever,
+                    "context_type": self.config.context_type
+                },
+                "prompt": {
+                    "template": self.config.prompt_template
+                }
+            }
+            try:
+                full_config_plain = OmegaConf.to_container(full_config, resolve=True)
+            except (ValueError, TypeError):
+                full_config_plain = full_config
+            self.local_logger.config = full_config_plain
         
         # Создаем директорию для результатов
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -137,6 +171,17 @@ class ExperimentRunner:
     def run(self, model: BaseModel, retriever: BaseRetriever, dataset: BaseDataset, use_clearml: bool = True):
         """Run the experiment."""
         self.setup_experiment(use_clearml=use_clearml)
+        
+        # Инициализируем metric_calculator с токенизатором модели
+        # Это важно для правильного подсчета recall - нужно использовать тот же токенизатор
+        if hasattr(model, 'tokenizer') and model.tokenizer is not None:
+            self.metric_calculator = TokenRecallCalculator(tokenizer=model.tokenizer)
+            self.logger.info("✅ TokenRecallCalculator инициализирован с токенизатором модели")
+        else:
+            # Fallback: используем токенизатор из конфига модели
+            model_path = self.config.model_config.get('model_path', 'bert-base-uncased')
+            self.metric_calculator = TokenRecallCalculator(tokenizer_name=model_path)
+            self.logger.warning(f"⚠️  Используется токенизатор из конфига: {model_path}")
         
         # Initial memory state
         self.memory_tracker.log_memory("system", "experiment_start")
@@ -225,6 +270,23 @@ class ExperimentRunner:
         self.logger.report_text(f"📦 Размер модели: {metrics.get('model_size_mb', 0):.2f} MB")
         self.logger.report_text(f"🔍 Размер индекса RAG: {metrics.get('retriever_index_size_mb', 0):.2f} MB")
         
+        # Сохраняем все данные локального логгера (если используется)
+        if not self.use_clearml and hasattr(self, 'local_logger'):
+            self.local_logger.save_all(self.config.name)
+            
+            # Сохраняем артефакты
+            results_file = self.config.output_dir / "results.json"
+            if results_file.exists():
+                self.local_logger.save_artifact("experiment_results", results_file)
+            
+            predictions_file = self.config.output_dir / "predictions.json"
+            if predictions_file.exists():
+                self.local_logger.save_artifact("model_predictions", predictions_file)
+            
+            memory_file = self.config.output_dir / "memory_usage.json"
+            if memory_file.exists():
+                self.local_logger.save_artifact("memory_usage", memory_file)
+        
     def _get_context(self, item: DatasetItem, retriever: Optional[BaseRetriever]) -> List[str]:
         """Get context based on experiment mode."""
         if not self.config.use_retriever:
@@ -247,12 +309,33 @@ class ExperimentRunner:
         recalls = []
         processed = 0
         logged_prompt_examples = 0  # Track how many prompt examples we've logged
-        max_prompt_examples = 3  # Log first 3 prompt examples
+        max_prompt_examples = 20  # Log first 20 prompt examples
         
         # Get total number of examples for progress tracking
         eval_data = list(dataset.get_eval_data())
         total_examples = len(eval_data)
-        self.logger.info(f"📊 Всего примеров для обработки: {total_examples}")
+        
+        # Подсчитываем количество элементов с ответами (для прогресс-бара)
+        valid_examples = sum(1 for item in eval_data if item.answer)
+        
+        # Определяем максимальное количество примеров для обработки
+        max_to_process = valid_examples
+        if self.config.max_samples:
+            max_to_process = min(valid_examples, self.config.max_samples)
+        
+        self.logger.info(f"📊 Всего примеров для обработки: {max_to_process} (из {total_examples} в датасете)")
+        
+        # Создаем прогресс-бар
+        if HAS_TQDM:
+            pbar = tqdm(
+                total=max_to_process,
+                desc="Обработка примеров",
+                unit="пример",
+                ncols=100,
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+            )
+        else:
+            pbar = None
         
         for item in eval_data:
             if not item.answer:  # Skip items without ground truth
@@ -330,10 +413,39 @@ class ExperimentRunner:
             # Increment processed counter
             processed += 1
             
+            # Обновляем прогресс-бар
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix({
+                    'recall': f'{mean(recalls)*100:.2f}%' if recalls else '0%',
+                    'processed': processed
+                })
+            
+            # Логируем прогресс в текстовый лог периодически
+            log_interval = 10  # Логируем каждые 10 примеров
+            if processed % log_interval == 0 or processed == 1:
+                avg_recall = mean(recalls) if recalls else 0.0
+                progress_pct = (processed / max_to_process * 100) if max_to_process > 0 else 0
+                self.logger.info(
+                    f"📊 Прогресс: {processed}/{max_to_process} ({progress_pct:.1f}%) | "
+                    f"Средний recall: {avg_recall*100:.2f}% | "
+                    f"Обработано: {processed}"
+                )
+            
             # Clear memory periodically and log progress AFTER incrementing
             if processed % 100 == 0:
                 self.memory_tracker.clear_memory()
-                self.logger.info(f"📊 Обработано примеров: {processed}/{total_examples} ({processed/total_examples*100:.1f}%)")
+                avg_recall = mean(recalls) if recalls else 0.0
+                # Дополнительное логирование каждые 100 примеров с информацией о памяти
+                memory_stats = self.memory_tracker.get_current_memory_usage()
+                gpu_info = f"GPU RAM: {memory_stats.gpu_ram_used:.1f} MB" if memory_stats.gpu_ram_used else "GPU RAM: N/A"
+                self.logger.info(
+                    f"💾 Память: CPU RAM: {memory_stats.cpu_ram_used:.1f} MB | {gpu_info}"
+                )
+        
+        # Закрываем прогресс-бар
+        if pbar:
+            pbar.close()
         
         # Calculate average recall
         avg_recall = mean(recalls) if recalls else 0.0
@@ -417,7 +529,13 @@ class ExperimentRunner:
             # Логируем метрики в ClearML
             log_metrics_to_clearml(self.logger, metrics)
         else:
-            # Режим без ClearML - только локальное логирование
-            self.logger.info("📊 Финальные результаты эксперимента:")
-            for metric_name, value in metrics.items():
-                self.logger.info(f"  {metric_name}: {value:.4f}")
+            # Режим без ClearML - логируем метрики в локальный логгер
+            if hasattr(self, 'local_logger'):
+                # Логируем метрики как single values
+                for metric_name, value in metrics.items():
+                    self.local_logger.report_single_value(metric_name, value)
+                
+                # Также логируем в текстовом виде
+                self.logger.info("📊 Финальные результаты эксперимента:")
+                for metric_name, value in metrics.items():
+                    self.logger.info(f"  {metric_name}: {value:.4f}")

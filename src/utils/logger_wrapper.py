@@ -11,28 +11,30 @@ class LoggerWrapper:
         Initialize wrapper.
         
         Args:
-            logger: Either ClearML Logger or standard Python logger
+            logger: Either ClearML Logger, LocalLogger, or standard Python logger
         """
         self.logger = logger
-        self._is_clearml = hasattr(logger, 'report_scalar')
+        # Проверяем тип логгера
+        self._is_clearml = hasattr(logger, 'report_scalar') and hasattr(logger, 'report_text')
+        self._is_local = hasattr(logger, 'save_all')  # LocalLogger имеет метод save_all
     
     def report_scalar(self, title: str, series: str, value: Any, iteration: int = 0):
         """Report a scalar value."""
-        if self._is_clearml:
+        if self._is_clearml or self._is_local:
             self.logger.report_scalar(title, series, value, iteration)
         else:
             self.logger.info(f"📊 {title}/{series}: {value}")
     
     def report_text(self, text: str):
         """Report text."""
-        if self._is_clearml:
+        if self._is_clearml or self._is_local:
             self.logger.report_text(text)
         else:
             self.logger.info(text)
     
     def report_table(self, title: str, series: str, table_plot, iteration: int = 0):
         """Report a table."""
-        if self._is_clearml:
+        if self._is_clearml or self._is_local:
             self.logger.report_table(title, series, table_plot=table_plot, iteration=iteration)
         else:
             self.logger.info(f"📊 Table: {title}/{series}")
@@ -40,7 +42,7 @@ class LoggerWrapper:
     
     def report_single_value(self, name: str, value):
         """Report a single value (appears in SCALARS without graph)."""
-        if self._is_clearml:
+        if self._is_clearml or self._is_local:
             self.logger.report_single_value(name, value)
         else:
             self.logger.info(f"📈 {name}: {value}")

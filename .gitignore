@@ -244,3 +244,5 @@ ehthumbs.db
 Thumbs.db
 
 .env
+# Логи фоновых экспериментов
+logs/
