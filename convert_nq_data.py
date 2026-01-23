@@ -27,30 +27,41 @@ def extract_contexts(item: Dict[str, Any]) -> Tuple[List[str], List[str]]:
         tuple: (long_contexts, short_contexts) - списки извлеченных контекстов
     """
     # Разделяем document_text на токены
-    tokens = item['document_text'].split()
+    document_text = item.get('document_text', '')
+    if not document_text:
+        return [], []
+    tokens = document_text.split()
     
     long_contexts = []
     short_contexts = []
     
-    for annotation in item['annotations']:
+    annotations = item.get('annotations', [])
+    if not annotations:
+        return [], []
+    
+    for annotation in annotations:
         # Long context
-        if annotation['long_answer']['candidate_index'] != -1:
-            cand_idx = annotation['long_answer']['candidate_index']
-            if cand_idx < len(item['long_answer_candidates']):
-                cand = item['long_answer_candidates'][cand_idx]
-                if cand['start_token'] != -1 and cand['end_token'] != -1:
-                    if cand['start_token'] < len(tokens) and cand['end_token'] <= len(tokens):
-                        text = " ".join(tokens[cand['start_token']:cand['end_token']])
-                        if text.strip():  # Добавляем только непустые контексты
-                            long_contexts.append(text.strip())
+        if annotation.get('long_answer') is not None:
+            long_answer = annotation['long_answer']
+            if long_answer.get('candidate_index', -1) != -1:
+                cand_idx = long_answer['candidate_index']
+                if cand_idx < len(item.get('long_answer_candidates', [])):
+                    cand = item['long_answer_candidates'][cand_idx]
+                    if cand.get('start_token', -1) != -1 and cand.get('end_token', -1) != -1:
+                        if cand['start_token'] < len(tokens) and cand['end_token'] <= len(tokens):
+                            text = " ".join(tokens[cand['start_token']:cand['end_token']])
+                            if text.strip():  # Добавляем только непустые контексты
+                                long_contexts.append(text.strip())
         
         # Short contexts
-        for short_ans in annotation['short_answers']:
-            if short_ans['start_token'] != -1 and short_ans['end_token'] != -1:
-                if short_ans['start_token'] < len(tokens) and short_ans['end_token'] <= len(tokens):
-                    text = " ".join(tokens[short_ans['start_token']:short_ans['end_token']])
-                    if text.strip():  # Добавляем только непустые контексты
-                        short_contexts.append(text.strip())
+        short_answers = annotation.get('short_answers', [])
+        if short_answers:
+            for short_ans in short_answers:
+                if short_ans.get('start_token', -1) != -1 and short_ans.get('end_token', -1) != -1:
+                    if short_ans['start_token'] < len(tokens) and short_ans['end_token'] <= len(tokens):
+                        text = " ".join(tokens[short_ans['start_token']:short_ans['end_token']])
+                        if text.strip():  # Добавляем только непустые контексты
+                            short_contexts.append(text.strip())
     
     return long_contexts, short_contexts
 
@@ -80,9 +91,9 @@ def convert_item(item: Dict[str, Any]) -> Dict[str, Any]:
     
     # Создаем конвертированный элемент
     converted = {
-        'question': item['question'],
-        'answer': item['answer'],  # Оставляем как массив
-        'context': item['document_text'],  # Весь текст документа
+        'question': item.get('question', ''),
+        'answer': item.get('answer', []),  # Оставляем как массив
+        'context': item.get('document_text', ''),  # Весь текст документа
         'long_context': long_contexts,  # Список long contexts
         'short_context': short_contexts,  # Список short contexts
         'id': str(item.get('example_id', '')),
