@@ -19,10 +19,10 @@ def create_clearml_config():
     
     config_content = """api {
     # Notice: 'host' is the api server (default port 8008), not the web server.
-    api_server: http://51.250.43.3:8008
-    web_server: http://51.250.43.3:8080
-    files_server: http://51.250.43.3:8081
-    # Credentials are generated using the webapp, http://51.250.43.3:8080
+    api_server: http://localhost:8008
+    web_server: http://localhost:8080
+    files_server: http://localhost:8081
+    # Credentials are generated using the webapp, http://localhost:8080
     credentials {
         "access_key" = "your-access-key"
         "secret_key" = "your-secret-key"
@@ -37,10 +37,10 @@ sdk {
         }
         # S3 storage configuration for artifacts
         s3 {
-            endpoint_url: "http://51.250.43.3:9000"
+            endpoint_url: "http://localhost:9000"
             bucket: "clearml-artifacts"
-            access_key: "minio_admin_2024"
-            secret_key: "Kx9mP7$vL2@nQ8!wE5&rT3*yU6+iO1-pA4^sD9~fG0"
+            access_key: "minioadmin"
+            secret_key: "minioadmin"
             region: "us-east-1"
             path_style: true
             verify_ssl: false
@@ -71,13 +71,13 @@ def setup_environment_variables():
     """Настраивает переменные окружения для ClearML."""
     
     env_vars = {
-        "CLEARML_API_HOST": "http://51.250.43.3:8008",
-        "CLEARML_WEB_HOST": "http://51.250.43.3:8080",
-        "CLEARML_FILES_HOST": "http://51.250.43.3:8081",
-        "CLEARML_S3_ENDPOINT": "http://51.250.43.3:9000",
+        "CLEARML_API_HOST": "http://localhost:8008",
+        "CLEARML_WEB_HOST": "http://localhost:8080",
+        "CLEARML_FILES_HOST": "http://localhost:8081",
+        "CLEARML_S3_ENDPOINT": "http://localhost:9000",
         "CLEARML_S3_BUCKET": "clearml-artifacts",
-        "CLEARML_S3_ACCESS_KEY": "minio_admin_2024",
-        "CLEARML_S3_SECRET_KEY": "Kx9mP7$vL2@nQ8!wE5&rT3*yU6+iO1-pA4^sD9~fG0"
+        "CLEARML_S3_ACCESS_KEY": "minioadmin",
+        "CLEARML_S3_SECRET_KEY": "minioadmin"
     }
     
     logger.info("🔧 Настройка переменных окружения...")
@@ -92,15 +92,15 @@ def create_env_file():
     """Создает .env файл с переменными окружения."""
     
     env_content = """# ClearML Configuration
-CLEARML_API_HOST=http://51.250.43.3:8008
-CLEARML_WEB_HOST=http://51.250.43.3:8080
-CLEARML_FILES_HOST=http://51.250.43.3:8081
+CLEARML_API_HOST=http://localhost:8008
+CLEARML_WEB_HOST=http://localhost:8080
+CLEARML_FILES_HOST=http://localhost:8081
 
 # S3 Storage Configuration
-CLEARML_S3_ENDPOINT=http://51.250.43.3:9000
+CLEARML_S3_ENDPOINT=http://localhost:9000
 CLEARML_S3_BUCKET=clearml-artifacts
-CLEARML_S3_ACCESS_KEY=minio_admin_2024
-CLEARML_S3_SECRET_KEY=Kx9mP7$vL2@nQ8!wE5&rT3*yU6+iO1-pA4^sD9~fG0
+CLEARML_S3_ACCESS_KEY=minioadmin
+CLEARML_S3_SECRET_KEY=minioadmin
 CLEARML_S3_REGION=us-east-1
 CLEARML_S3_PATH_STYLE=true
 CLEARML_S3_VERIFY_SSL=false
@@ -126,7 +126,7 @@ def print_instructions():
 📋 ИНСТРУКЦИИ ПО НАСТРОЙКЕ CLEARML:
 
 1. 🔑 Получение учетных данных:
-   - Откройте веб-интерфейс: http://51.250.43.3:8080
+   - Откройте веб-интерфейс: http://localhost:8080
    - Зарегистрируйтесь или войдите в систему
    - Перейдите в Settings → Workspace → Create new credentials
    - Скопируйте access_key и secret_key
@@ -143,9 +143,10 @@ def print_instructions():
    poetry run python -m src.cli run-experiment model=smollm2_135m dataset=local_nq
 
 📊 Доступ к результатам:
-   - Веб-интерфейс: http://51.250.43.3:8080
-   - API: http://51.250.43.3:8008
-   - S3 хранилище: http://51.250.43.3:9000
+   - Веб-интерфейс: http://localhost:8080
+   - API: http://localhost:8008
+   - S3 хранилище: http://localhost:9000
+   - MinIO веб-консоль: http://localhost:9001
 """
     
     logger.info(instructions)

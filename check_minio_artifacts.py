@@ -12,9 +12,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Настройки MinIO
-MINIO_ENDPOINT = os.getenv('CLEARML_S3_ENDPOINT', 'http://51.250.43.3:9000')
-MINIO_ACCESS_KEY = os.getenv('CLEARML_S3_ACCESS_KEY', 'minio_admin_2024')
-MINIO_SECRET_KEY = os.getenv('CLEARML_S3_SECRET_KEY', 'Kx9mP7$vL2@nQ8!wE5&rT3*yU6+iO1-pA4^sD9~fG0')
+MINIO_ENDPOINT = os.getenv('CLEARML_S3_ENDPOINT', 'http://localhost:9000')
+MINIO_ACCESS_KEY = os.getenv('CLEARML_S3_ACCESS_KEY', 'minioadmin')
+MINIO_SECRET_KEY = os.getenv('CLEARML_S3_SECRET_KEY', 'minioadmin')
 BUCKET_NAME = 'clearml-artifacts'
 
 print(f"🔍 Проверка содержимого MinIO bucket: {BUCKET_NAME}")

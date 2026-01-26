@@ -246,3 +246,4 @@ Thumbs.db
 .env
 # Логи фоновых экспериментов
 logs/
+.config/

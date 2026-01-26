@@ -1,0 +1,12 @@
+# Конфигурация для тестового эксперимента на 100 сэмплах
+name: test_100_samples
+max_samples: 100
+use_retriever: false
+context_type: none
+
+# Prompt template
+prompt_template: "Question: {question}\nAnswer:"
+
+metrics:
+  - token_recall
+

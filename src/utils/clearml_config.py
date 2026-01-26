@@ -6,6 +6,18 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
+
+# Копируем конфигурацию Docker сети ДО импорта ClearML, если её нет
+_config_path = Path.home() / ".clearml.conf"
+if not _config_path.exists():
+    # Пробуем найти конфигурацию в рабочей директории
+    _project_root = Path(__file__).parent.parent.parent
+    _docker_config = _project_root / "clearml.conf.docker"
+    if _docker_config.exists():
+        import shutil
+        _config_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(_docker_config, _config_path)
+
 from clearml import Task, Logger
 
 
@@ -95,6 +107,51 @@ def create_clearml_task(
     """
     # Настраиваем окружение
     setup_clearml_environment(env_file)
+    
+    # Проверяем наличие конфигурационного файла и копируем если нужно
+    config_path = Path.home() / ".clearml.conf"
+    if not config_path.exists():
+        # Пробуем найти конфигурацию в рабочей директории
+        project_root = Path(__file__).parent.parent.parent
+        docker_config = project_root / "clearml.conf.docker"
+        if docker_config.exists():
+            import shutil
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(docker_config, config_path)
+    
+    # Парсим конфигурационный файл и устанавливаем переменные окружения
+    # ClearML SDK может не читать файл правильно, поэтому используем переменные окружения
+    if config_path.exists():
+        try:
+            import re
+            with open(config_path, 'r') as f:
+                content = f.read()
+                
+                # Извлекаем значения из HOCON конфигурации
+                # Ищем api_server, web_server, files_server
+                api_match = re.search(r'api_server:\s*([^\s\n]+)', content)
+                web_match = re.search(r'web_server:\s*([^\s\n]+)', content)
+                files_match = re.search(r'files_server:\s*([^\s\n]+)', content)
+                
+                if api_match:
+                    os.environ['CLEARML_API_HOST'] = api_match.group(1)
+                if web_match:
+                    os.environ['CLEARML_WEB_HOST'] = web_match.group(1)
+                if files_match:
+                    os.environ['CLEARML_FILES_HOST'] = files_match.group(1)
+                
+                # Ищем credentials (access_key и secret_key)
+                access_key_match = re.search(r'"access_key"\s*=\s*"([^"]+)"', content)
+                secret_key_match = re.search(r'"secret_key"\s*=\s*"([^"]+)"', content)
+                
+                if access_key_match:
+                    os.environ['CLEARML_API_ACCESS_KEY'] = access_key_match.group(1)
+                if secret_key_match:
+                    os.environ['CLEARML_API_SECRET_KEY'] = secret_key_match.group(1)
+        except Exception as e:
+            # Если не удалось распарсить, продолжаем без переменных окружения
+            import logging
+            logging.getLogger(__name__).warning(f"Не удалось распарсить конфигурацию: {e}")
     
     # Создаем задачу
     task = Task.init(

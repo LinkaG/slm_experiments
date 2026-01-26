@@ -1,9 +1,10 @@
 api {
     # Notice: 'host' is the api server (default port 8008), not the web server.
-    api_server: http://localhost:8008
-    web_server: http://localhost:8080
-    files_server: http://localhost:8081
-    # Credentials are generated using the webapp, http://localhost:8080
+    # Используем имена Docker контейнеров для доступа внутри Docker сети
+    api_server: http://clearml-apiserver:8008
+    web_server: http://clearml-webserver:80
+    files_server: http://clearml-fileserver:8081
+    # Credentials are generated using the webapp
     credentials {
         "access_key" = "Y5MPEHCJ8FKJ1Z85QH1BMB54YBKVYR"
         "secret_key" = "hXy6h6ROPhY-Pn0jmL7FkNUtak4uhn-RErPFpYYqdYov5ya2pbUlDddCp7O5Lc51R98"
@@ -11,8 +12,9 @@ api {
 }
 sdk {
     # Default output_uri for artifacts (MinIO S3)
+    # Формат без хоста - хост берется из storage.direct_access
     development {
-        default_output_uri: "s3://localhost:9000/clearml-artifacts"
+        default_output_uri: "s3://clearml-artifacts"
     }
     
     # Storage for output models and other artifacts
@@ -23,13 +25,31 @@ sdk {
         }
         
         # S3 credentials configuration
+        # Используем формат с явным указанием bucket
         direct_access: [
             {
-                # Match all S3 URLs
+                # Match S3 URLs для bucket clearml-artifacts
+                url: "s3://clearml-artifacts/*"
+                
+                # MinIO endpoint (используем имя контейнера)
+                host: "minio:9000"
+                
+                # S3 credentials
+                key: "minioadmin"
+                secret: "minioadmin"
+                
+                # S3 configuration
+                region: "us-east-1"
+                multipart: false
+                secure: false
+                verify: false
+            },
+            {
+                # Fallback для всех остальных S3 URLs
                 url: "s3://*"
                 
-                # MinIO endpoint (S3 API port, not web console)
-                host: "localhost:9000"
+                # MinIO endpoint
+                host: "minio:9000"
                 
                 # S3 credentials
                 key: "minioadmin"
@@ -56,7 +76,7 @@ sdk {
             
             credentials: [
                 {
-                    host: "localhost:9000"
+                    host: "minio:9000"
                     key: "minioadmin"
                     secret: "minioadmin"
                     multipart: false
@@ -72,3 +92,4 @@ sdk {
         }
     }
 }
+

@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Poetry
+.poetry/
+poetry.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+.dockerignore
+
+# Logs
+*.log
+logs/
+
+# Data
+data/
+outputs/
+
+# Config files that might have permissions issues
+.config/
+.cache/
+
+# Other
+.DS_Store
+*.tmp
+*.bak
+

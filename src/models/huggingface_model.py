@@ -51,10 +51,22 @@ class HuggingFaceModel(BaseModel):
         
         try:
             # Load tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_path,
-                trust_remote_code=True
-            )
+            # Используем use_fast=False для совместимости со старыми версиями tokenizers
+            # Если возникает ошибка ModelWrapper, это поможет использовать медленный токенайзер
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True,
+                    use_fast=True
+                )
+            except Exception as e:
+                self.logger.warning(f"Не удалось загрузить быстрый токенайзер: {e}")
+                self.logger.info("Пробуем использовать медленный токенайзер...")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True,
+                    use_fast=False
+                )
             
             # Set padding token if not set
             if self.tokenizer.pad_token is None:

@@ -3,6 +3,13 @@
 """
 Скрипт для тестирования подключения к ClearML серверу.
 Проверяет доступность API, веб-интерфейса и S3 хранилища.
+
+Использование:
+    # Локальный запуск (на хосте)
+    poetry run python test_clearml_connection.py
+    
+    # Запуск через Docker сеть
+    ./run_in_docker_network.sh test_clearml_connection.py
 """
 
 import os
@@ -17,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def test_api_connection():
     """Тестирует подключение к ClearML API."""
-    api_url = "http://51.250.43.3:8008"
+    api_url = "http://localhost:8008"
     try:
         response = requests.get(f"{api_url}/v2.3/system/version", timeout=10)
         if response.status_code == 200:
@@ -32,7 +39,7 @@ def test_api_connection():
 
 def test_web_connection():
     """Тестирует подключение к ClearML Web UI."""
-    web_url = "http://51.250.43.3:8080"
+    web_url = "http://localhost:8080"
     try:
         response = requests.get(web_url, timeout=10)
         if response.status_code == 200:
@@ -47,7 +54,7 @@ def test_web_connection():
 
 def test_s3_connection():
     """Тестирует подключение к MinIO S3."""
-    s3_url = "http://51.250.43.3:9000"
+    s3_url = "http://localhost:9000"
     try:
         response = requests.get(s3_url, timeout=10)
         if response.status_code in [200, 403]:  # 403 означает что сервер доступен, но нужна авторизация
@@ -102,7 +109,7 @@ def check_config_file():
         try:
             with open(config_path, 'r') as f:
                 content = f.read()
-                if "51.250.43.3" in content:
+                if "localhost" in content:
                     logger.info("✅ Конфигурация содержит правильный IP адрес")
                     return True
                 else:

@@ -1,0 +1,35 @@
+# Используем официальный образ PyTorch с CUDA поддержкой
+# Обновляем до более новой версии для лучшей совместимости с transformers
+# Этот образ работает и на GPU, и на CPU (fallback автоматически)
+FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+WORKDIR /workspace
+
+# Установка системных зависимостей
+RUN apt-get update -qq && \
+    apt-get install -y -qq curl git > /dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# PyTorch уже установлен в базовом образе, устанавливаем остальные зависимости
+# Фиксируем версии для совместимости с PyTorch 2.2.0 и поддержки Qwen2Tokenizer
+# Qwen2Tokenizer требует transformers >= 4.32.0
+# PyTorch 2.2.0 поддерживает более новые версии transformers
+# Это будет кэшироваться Docker, если зависимости не изменятся
+RUN pip install --no-cache-dir \
+    clearml \
+    boto3 \
+    python-dotenv \
+    requests \
+    omegaconf \
+    hydra-core \
+    "transformers>=4.40.0" \
+    tqdm \
+    pandas
+
+# Установка зависимостей проекта (если есть requirements.txt)
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
+
+# По умолчанию запускаем bash
+CMD ["bash"]
+

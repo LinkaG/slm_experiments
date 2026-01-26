@@ -54,13 +54,14 @@ def parse_arguments():
     
     return parser.parse_args()
 
-def run_experiment_with_config(use_clearml=None, env_file='.env'):
+def run_experiment_with_config(use_clearml=None, env_file='.env', hydra_overrides=None):
     """
     Запуск эксперимента с использованием configs/config.yaml
     
     Args:
         use_clearml: Использовать ClearML (None = читать из .env)
         env_file: Путь к .env файлу
+        hydra_overrides: Список аргументов Hydra вида ['key=value', ...]
     """
     logger = setup_logging()
     
@@ -89,7 +90,11 @@ def run_experiment_with_config(use_clearml=None, env_file='.env'):
         
         # Инициализируем Hydra
         with initialize(config_path="configs", version_base=None):
-            config = compose(config_name="config")
+            if hydra_overrides:
+                # Передаем аргументы Hydra
+                config = compose(config_name="config", overrides=hydra_overrides)
+            else:
+                config = compose(config_name="config")
         
         logger.info("✅ Конфигурация загружена")
 
@@ -154,8 +159,22 @@ def run_experiment_with_config(use_clearml=None, env_file='.env'):
     return True
 
 if __name__ == "__main__":
+    import sys
+    
+    # Разделяем аргументы argparse и Hydra
+    # Аргументы Hydra имеют формат key=value и не начинаются с --
+    hydra_overrides = [arg for arg in sys.argv[1:] if '=' in arg and not arg.startswith('--')]
+    argparse_args = [arg for arg in sys.argv[1:] if arg not in hydra_overrides]
+    
+    # Временно заменяем sys.argv для argparse
+    original_argv = sys.argv
+    sys.argv = [sys.argv[0]] + argparse_args
+    
     # Парсим аргументы командной строки
     args = parse_arguments()
+    
+    # Восстанавливаем sys.argv и добавляем Hydra аргументы
+    sys.argv = original_argv
     
     # Определяем, использовать ли ClearML
     # Если явно указан --use-clearml или --no-clearml, используем их
@@ -168,5 +187,5 @@ if __name__ == "__main__":
         # Не указано явно - читаем из .env
         use_clearml = None
     
-    # Запускаем эксперимент
-    run_experiment_with_config(use_clearml=use_clearml, env_file=args.env_file)
+    # Запускаем эксперимент с Hydra overrides
+    run_experiment_with_config(use_clearml=use_clearml, env_file=args.env_file, hydra_overrides=hydra_overrides)

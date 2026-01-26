@@ -1,0 +1,26 @@
+# Альтернативный Dockerfile для машин без GPU (легче и быстрее)
+FROM python:3.10-slim
+
+WORKDIR /workspace
+
+# Установка системных зависимостей
+RUN apt-get update -qq && \
+    apt-get install -y -qq curl git > /dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Установка Python зависимостей (CPU версия PyTorch)
+RUN pip install --no-cache-dir \
+    clearml \
+    boto3 \
+    python-dotenv \
+    requests \
+    omegaconf \
+    hydra-core \
+    torch \
+    transformers \
+    tqdm \
+    pandas
+
+# По умолчанию запускаем bash
+CMD ["bash"]
+
