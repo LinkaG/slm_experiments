@@ -82,6 +82,13 @@ class ExperimentRunner:
                 self.task.output_uri = s3_output_uri
                 self.logger.info(f"📦 Output URI установлен: {s3_output_uri}")
                 self.logger.info(f"💾 Артефакты будут сохраняться в MinIO bucket 'clearml-artifacts'")
+                
+                # Проверяем, что output_uri действительно установлен
+                actual_output_uri = getattr(self.task, 'output_uri', None)
+                if actual_output_uri:
+                    self.logger.info(f"✅ Подтверждено: output_uri = {actual_output_uri}")
+                else:
+                    self.logger.warning("⚠️  output_uri не установлен после попытки установки")
             except Exception as e:
                 # Если не удалось установить output_uri, используем default_output_uri из конфига
                 self.logger.warning(f"⚠️ Не удалось установить output_uri: {e}")
@@ -265,18 +272,44 @@ class ExperimentRunner:
             peak_memory = self.memory_tracker.peak_stats.to_dict()
             metrics.update(peak_memory)
             
-            # Логируем пиковую память
+            # Логируем пиковую память и мощность
             self.logger.report_text("💾 Пиковое использование памяти:")
             self.logger.report_text(f"  CPU RAM: {peak_memory['cpu_ram_used_mb']:.2f} MB")
             if peak_memory['gpu_ram_peak_mb'] > 0:
                 self.logger.report_text(f"  GPU RAM (peak): {peak_memory['gpu_ram_peak_mb']:.2f} MB")
                 self.logger.report_text(f"  GPU RAM (reserved): {peak_memory['reserved_gpu_ram_mb']:.2f} MB")
+            if peak_memory.get('gpu_power_draw_w', 0) > 0:
+                power_limit = peak_memory.get('gpu_power_limit_w', 0)
+                power_pct = (peak_memory['gpu_power_draw_w'] / power_limit * 100) if power_limit > 0 else 0
+                self.logger.report_text(f"  GPU Power (peak): {peak_memory['gpu_power_draw_w']:.2f}W / {power_limit:.2f}W ({power_pct:.1f}%)")
         
         # Пересохраняем результаты с обновленными метриками
         self._save_results(metrics)
         
-        # Сохраняем предсказания и загружаем как артефакт
-        self.predictions_tracker.save_predictions()
+        # Сохраняем предсказания и загружаем как артефакт в MinIO
+        # Передаем callback для прямой загрузки в MinIO через Docker сеть
+        if self.use_clearml and self.task is not None:
+            # Сохраняем предсказания и загружаем в MinIO через callback
+            predictions_s3_path = self.predictions_tracker.save_predictions(
+                upload_to_minio_callback=self._upload_to_minio_direct
+            )
+            # Регистрируем артефакт в ClearML с метаданными и ссылкой на MinIO
+            if predictions_s3_path:
+                predictions_file = self.config.output_dir / "predictions.json"
+                self._register_clearml_artifact(
+                    name="model_predictions",
+                    s3_path=predictions_s3_path,
+                    local_file=predictions_file,
+                    metadata={
+                        "experiment_name": self.config.name,
+                        "num_predictions": len(self.predictions_tracker.predictions),
+                        "timestamp": time.time(),
+                        "storage": "MinIO S3",
+                        "s3_path": predictions_s3_path
+                    }
+                )
+        else:
+            self.predictions_tracker.save_predictions()
         
         # Логируем завершение эксперимента
         self.logger.report_text("✅ Эксперимент успешно завершен!")
@@ -451,11 +484,15 @@ class ExperimentRunner:
             if processed % 100 == 0:
                 self.memory_tracker.clear_memory()
                 avg_recall = mean(recalls) if recalls else 0.0
-                # Дополнительное логирование каждые 100 примеров с информацией о памяти
+                # Дополнительное логирование каждые 100 примеров с информацией о памяти и мощности
                 memory_stats = self.memory_tracker.get_current_memory_usage()
                 gpu_info = f"GPU RAM: {memory_stats.gpu_ram_used:.1f} MB" if memory_stats.gpu_ram_used else "GPU RAM: N/A"
+                power_info = ""
+                if memory_stats.gpu_power_draw is not None:
+                    power_pct = (memory_stats.gpu_power_draw / memory_stats.gpu_power_limit * 100) if memory_stats.gpu_power_limit else 0
+                    power_info = f" | GPU Power: {memory_stats.gpu_power_draw:.1f}W/{memory_stats.gpu_power_limit:.1f}W ({power_pct:.1f}%)"
                 self.logger.info(
-                    f"💾 Память: CPU RAM: {memory_stats.cpu_ram_used:.1f} MB | {gpu_info}"
+                    f"💾 Память: CPU RAM: {memory_stats.cpu_ram_used:.1f} MB | {gpu_info}{power_info}"
                 )
         
         # Закрываем прогресс-бар
@@ -500,26 +537,8 @@ class ExperimentRunner:
                     }
                 )
             
-            # Загружаем предсказания в MinIO
-            predictions_file = self.config.output_dir / "predictions.json"
-            if predictions_file.exists():
-                self.logger.info("📤 Загрузка предсказаний в MinIO...")
-                s3_path = self._upload_to_minio_direct(predictions_file, "experiment_results/predictions.json")
-                
-                # Регистрируем артефакт в ClearML с метаданными и ссылкой на MinIO
-                if s3_path:
-                    self._register_clearml_artifact(
-                        name="model_predictions",
-                        s3_path=s3_path,
-                        local_file=predictions_file,
-                        metadata={
-                            "experiment_name": self.config.name,
-                            "num_predictions": len(self.predictions_tracker.predictions),
-                            "timestamp": time.time(),
-                            "storage": "MinIO S3",
-                            "s3_path": s3_path
-                        }
-                    )
+            # Предсказания будут загружены в MinIO через save_predictions() с callback
+            # Регистрация артефакта произойдет после вызова save_predictions()
             
             # Также загружаем memory usage в MinIO если есть
             memory_file = self.config.output_dir / "memory_usage.json"
@@ -591,20 +610,23 @@ class ExperimentRunner:
             load_dotenv()
             
             # Определяем endpoint: в Docker сети используем имя контейнера, иначе localhost
-            # Проверяем, запущены ли мы в Docker сети (по наличию переменной окружения или по доступности minio:9000)
+            # Приоритет: переменная окружения > автоопределение Docker сети > localhost
             endpoint = os.getenv('CLEARML_S3_ENDPOINT')
-            if not endpoint:
+            if endpoint:
+                self.logger.info(f"🔍 Используется endpoint из переменной окружения: {endpoint}")
+            else:
                 # Пробуем определить автоматически: если доступен minio:9000, используем его
                 try:
                     import socket
+                    # Проверяем доступность minio через Docker сеть
                     socket.gethostbyname('minio')
                     endpoint = 'http://minio:9000'
                     self.logger.info(f"🔍 Автоопределение: используется Docker сеть endpoint: {endpoint}")
-                except:
+                except (socket.gaierror, OSError):
+                    # Если minio недоступен, используем localhost
                     endpoint = 'http://localhost:9000'
                     self.logger.info(f"🔍 Автоопределение: используется localhost endpoint: {endpoint}")
-            else:
-                self.logger.info(f"🔍 Используется endpoint из переменной окружения: {endpoint}")
+                    self.logger.warning("⚠️  MinIO через Docker сеть недоступен, используется localhost. Убедитесь, что контейнер запущен в сети clearml_backend")
             
             # Создаем S3 клиент для MinIO
             access_key = os.getenv('CLEARML_S3_ACCESS_KEY', 'minioadmin')
@@ -621,6 +643,44 @@ class ExperimentRunner:
                 region_name=os.getenv('CLEARML_S3_REGION', 'us-east-1')
             )
             
+            # Проверяем доступность MinIO и существование bucket
+            try:
+                # Пробуем получить список bucket'ов для проверки подключения
+                s3_client.list_buckets()
+                self.logger.info("✅ Подключение к MinIO успешно")
+            except Exception as conn_error:
+                self.logger.error(f"❌ Не удалось подключиться к MinIO: {conn_error}")
+                self.logger.error(f"   Проверьте, что MinIO доступен по адресу {endpoint}")
+                self.logger.error(f"   Убедитесь, что контейнер запущен в Docker сети clearml_backend")
+                return None
+            
+            # Проверяем существование bucket, создаем если нужно
+            try:
+                s3_client.head_bucket(Bucket=bucket)
+                self.logger.info(f"✅ Bucket '{bucket}' существует")
+            except Exception as e:
+                # Проверяем код ошибки для определения типа проблемы
+                error_code = None
+                if hasattr(e, 'response') and isinstance(e.response, dict):
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                elif hasattr(e, 'error_code'):
+                    error_code = e.error_code
+                
+                # 404 означает, что bucket не существует
+                if error_code == '404' or '404' in str(e) or 'Not Found' in str(e):
+                    # Bucket не существует, создаем его
+                    self.logger.info(f"📦 Bucket '{bucket}' не найден, создаем...")
+                    try:
+                        s3_client.create_bucket(Bucket=bucket)
+                        self.logger.info(f"✅ Bucket '{bucket}' успешно создан")
+                    except Exception as create_error:
+                        self.logger.error(f"❌ Не удалось создать bucket '{bucket}': {create_error}")
+                        return None
+                else:
+                    # Другая ошибка (например, проблемы с доступом)
+                    self.logger.warning(f"⚠️  Не удалось проверить bucket '{bucket}': {e}")
+                    self.logger.info(f"💡 Пробуем продолжить - bucket может быть создан автоматически при загрузке")
+            
             full_s3_key = f"{self.config.name}/{s3_key}"
             
             # Проверяем, что файл существует
@@ -628,7 +688,8 @@ class ExperimentRunner:
                 self.logger.warning(f"⚠️ Файл не найден: {file_path}")
                 return None
             
-            self.logger.info(f"📤 Загрузка файла {file_path} -> s3://{bucket}/{full_s3_key}")
+            file_size = file_path.stat().st_size
+            self.logger.info(f"📤 Загрузка файла {file_path} ({file_size} bytes) -> s3://{bucket}/{full_s3_key}")
             
             # Загружаем файл
             s3_client.upload_file(
@@ -644,52 +705,110 @@ class ExperimentRunner:
         except Exception as e:
             self.logger.error(f"❌ Не удалось загрузить файл в MinIO напрямую: {e}")
             import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+            # Не прерываем выполнение эксперимента из-за ошибки загрузки в MinIO
+            self.logger.warning("⚠️  Продолжаем выполнение эксперимента без загрузки в MinIO")
             return None
     
     def _register_clearml_artifact(self, name: str, s3_path: str, local_file: Path, metadata: Dict[str, Any]):
-        """Регистрирует артефакт в ClearML с метаданными и ссылкой на MinIO.
+        """Регистрирует артефакт в ClearML с прямым указанием S3 пути в MinIO.
         
-        Файл НЕ загружается в ClearML fileserver - только метаданные и ссылка на S3.
-        Это позволяет избежать дублирования файлов.
+        Пробует использовать S3 URI напрямую. Если не работает, создает файл-ссылку
+        с информацией о местоположении в MinIO и добавляет прямую ссылку в метаданные.
         """
         try:
             # Добавляем информацию о местоположении файла в MinIO в метаданные
             metadata_with_s3 = metadata.copy()
             metadata_with_s3["s3_path"] = s3_path
             metadata_with_s3["storage_location"] = "MinIO S3"
-            metadata_with_s3["note"] = f"Файл хранится в MinIO, не в ClearML fileserver. Путь: {s3_path}"
+            metadata_with_s3["storage_url"] = s3_path  # Прямая ссылка на MinIO
+            metadata_with_s3["note"] = f"Файл хранится в MinIO по пути: {s3_path}"
             
-            # Создаем файл с информацией о местоположении в директории эксперимента
-            # Это позволяет зарегистрировать артефакт в ClearML без дублирования файла
+            # Проверяем output_uri перед загрузкой
+            current_output_uri = getattr(self.task, 'output_uri', None)
+            if current_output_uri:
+                self.logger.info(f"📦 Используется output_uri: {current_output_uri}")
+            else:
+                self.logger.warning("⚠️  output_uri не установлен! Артефакт может быть загружен в fileserver")
+            
+            # Пробуем использовать S3 путь напрямую
+            # ClearML может понимать S3 URI если output_uri настроен правильно
+            try:
+                self.task.upload_artifact(
+                    name=name,
+                    artifact_object=s3_path,  # Пробуем использовать S3 путь напрямую
+                    metadata=metadata_with_s3
+                )
+                self.logger.info(f"✅ Артефакт '{name}' зарегистрирован в ClearML с S3 путем: {s3_path}")
+                return
+            except Exception as s3_error:
+                # Если прямой S3 путь не работает, создаем файл-ссылку
+                self.logger.debug(f"Прямой S3 путь не сработал: {s3_error}")
+                self.logger.info(f"💡 Создаем файл-ссылку с информацией о MinIO")
+            
+            # Создаем файл-ссылку с информацией о местоположении в MinIO
             import json as json_lib
+            link_file = local_file.parent / f"{name}_minio_link.json"
             
-            # Создаем файл метаданных в той же директории, что и исходный файл
-            metadata_file = local_file.parent / f"{name}_metadata.json"
+            # Извлекаем bucket и key из s3_path
+            # Формат: s3://bucket/key
+            s3_parts = s3_path.replace("s3://", "").split("/", 1)
+            bucket = s3_parts[0] if len(s3_parts) > 0 else "clearml-artifacts"
+            key = s3_parts[1] if len(s3_parts) > 1 else ""
             
-            # Сохраняем информацию о местоположении файла
-            location_info = {
+            # Получаем MinIO endpoint из переменных окружения
+            import os
+            minio_endpoint = os.getenv('CLEARML_S3_ENDPOINT', 'http://minio:9000')
+            # Убираем http:// или https:// для создания правильной ссылки
+            minio_host = minio_endpoint.replace("http://", "").replace("https://", "")
+            
+            # Создаем прямую ссылку на MinIO (для использования через boto3 или curl)
+            minio_direct_url = f"{minio_endpoint}/{bucket}/{key}"
+            
+            link_info = {
+                "artifact_name": name,
                 "storage": "MinIO S3",
                 "s3_path": s3_path,
-                "local_path": str(local_file),
-                "metadata": metadata_with_s3,
-                "note": "Этот файл содержит только метаданные. Сам файл находится в MinIO по указанному s3_path."
+                "bucket": bucket,
+                "key": key,
+                "minio_endpoint": minio_endpoint,
+                "minio_host": minio_host,
+                "direct_access_url": minio_direct_url,
+                "access_method": "Use boto3 or S3 client with endpoint_url",
+                "endpoint_url": minio_endpoint,
+                "bucket_name": bucket,
+                "object_key": key,
+                "credentials": {
+                    "access_key": os.getenv('CLEARML_S3_ACCESS_KEY', 'minioadmin'),
+                    "secret_key": os.getenv('CLEARML_S3_SECRET_KEY', 'minioadmin')
+                },
+                "note": "Этот файл содержит информацию о местоположении артефакта в MinIO. Используйте s3_path для доступа через boto3 или S3-совместимый клиент.",
+                "metadata": metadata_with_s3
             }
             
-            with open(metadata_file, 'w', encoding='utf-8') as f:
-                json_lib.dump(location_info, f, indent=2, ensure_ascii=False)
+            with open(link_file, 'w', encoding='utf-8') as f:
+                json_lib.dump(link_info, f, indent=2, ensure_ascii=False)
             
-            # Загружаем метаданные как артефакт (вместо самого файла)
+            # Загружаем файл-ссылку как артефакт
+            # В метаданных указываем прямую ссылку на MinIO
+            metadata_with_s3["minio_direct_url"] = minio_direct_url
+            metadata_with_s3["minio_access_info"] = {
+                "endpoint": minio_endpoint,
+                "bucket": bucket,
+                "key": key,
+                "s3_path": s3_path
+            }
+            
             self.task.upload_artifact(
                 name=name,
-                artifact_object=str(metadata_file),
+                artifact_object=str(link_file),
                 metadata=metadata_with_s3
             )
             
-            # Файл метаданных остается в директории эксперимента (он маленький)
-            # Можно удалить его позже, если нужно, но лучше оставить для отладки
-            
-            self.logger.info(f"✅ Артефакт '{name}' зарегистрирован в ClearML (только метаданные, файл в MinIO: {s3_path})")
+            self.logger.info(f"✅ Артефакт '{name}' зарегистрирован в ClearML")
+            self.logger.info(f"📦 Файл в MinIO: {s3_path}")
+            self.logger.info(f"🔗 Прямая ссылка на MinIO: {minio_direct_url}")
+            self.logger.info(f"💡 Используйте метаданные артефакта для доступа к файлу в MinIO")
             
         except Exception as e:
             self.logger.error(f"❌ Не удалось зарегистрировать артефакт в ClearML: {e}")

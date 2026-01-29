@@ -5,7 +5,7 @@ use_retriever: false
 context_type: none
 
 # Prompt template
-prompt_template: "Question: {question}\nAnswer:"
+prompt_template: "Answer the following question as briefly as possible. Provide only the factual answer without introductory phrases like 'The answer is...' or 'Based on my knowledge...'\n\nQuestion: {question}"
 
 metrics:
   - token_recall

@@ -53,8 +53,17 @@ class PredictionsTracker:
         )
         self.predictions.append(item)
     
-    def save_predictions(self):
-        """Save predictions to file and upload to ClearML."""
+    def save_predictions(self, upload_to_minio_callback=None):
+        """Save predictions to file.
+        
+        Args:
+            upload_to_minio_callback: Optional callback function(file_path, s3_key) -> s3_path
+                                     для загрузки в MinIO. Если не указан, артефакт будет 
+                                     загружен через ClearML (может использовать fileserver).
+        
+        Returns:
+            s3_path (str): Путь к файлу в MinIO, если был использован callback, иначе None
+        """
         # Сохраняем локально
         predictions_file = self.output_dir / "predictions.json"
         predictions_data = {
@@ -67,18 +76,28 @@ class PredictionsTracker:
             
         self.logger.info(f"Predictions saved to {predictions_file}")
         
-        # Загружаем в ClearML как артефакт
-        task = Task.current_task()
-        if task:
-            task.upload_artifact(
-                name="predictions",
-                artifact_object=predictions_file,
-                metadata={
-                    "num_predictions": len(self.predictions),
-                    "context_types": self._get_unique_context_types(),
-                    "model_names": self._get_unique_model_names()
-                }
-            )
+        # Если передан callback для MinIO, используем его
+        if upload_to_minio_callback:
+            s3_key = "experiment_results/predictions.json"
+            s3_path = upload_to_minio_callback(predictions_file, s3_key)
+            if s3_path:
+                self.logger.info(f"✅ Predictions uploaded to MinIO: {s3_path}")
+                return s3_path
+            return None
+        else:
+            # Fallback: загружаем через ClearML (может использовать fileserver вместо MinIO)
+            task = Task.current_task()
+            if task:
+                task.upload_artifact(
+                    name="predictions",
+                    artifact_object=predictions_file,
+                    metadata={
+                        "num_predictions": len(self.predictions),
+                        "context_types": self._get_unique_context_types(),
+                        "model_names": self._get_unique_model_names()
+                    }
+                )
+            return None
     
     def _calculate_statistics(self) -> Dict:
         """Calculate basic statistics about predictions."""

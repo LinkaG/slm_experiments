@@ -8,5 +8,4 @@ top_p: 0.95
 repetition_penalty: 1.1
 max_new_tokens: 50  # Короткие конкретные ответы
 device: cuda  # или cpu
-batch_size: 32
 use_flash_attention: false  # flash_attn not installed

@@ -35,12 +35,20 @@ fi
 echo "🚀 Запуск $SCRIPT_NAME через Docker сеть $CLEARML_NETWORK"
 echo "📦 Используется конфигурация: clearml.conf.docker"
 
+# Создаем директорию для кеша моделей на хосте (если не существует)
+# Можно переопределить через переменную окружения DOCKER_MODELS_CACHE
+CACHE_DIR="${DOCKER_MODELS_CACHE:-${HOME}/.cache/docker-models}"
+mkdir -p "$CACHE_DIR/huggingface"
+mkdir -p "$CACHE_DIR/datasets"
+echo "💾 Кеш моделей: $CACHE_DIR"
+
 # Собираем все аргументы в одну строку, правильно экранируя
 ARGS="$@"
 
 # Запускаем в временном контейнере
 # Монтируем конфигурацию напрямую в ~/.clearml.conf
 # Добавляем поддержку GPU если доступна
+# Монтируем кеш моделей для ускорения загрузки
 DOCKER_ARGS="--rm --network $CLEARML_NETWORK"
 if [ "$USE_GPU" = true ]; then
     DOCKER_ARGS="$DOCKER_ARGS --gpus all"
@@ -55,8 +63,12 @@ docker run $DOCKER_ARGS \
     -v "$(pwd):/workspace" \
     -v "$(pwd)/clearml.conf.docker:/root/.clearml.conf:ro" \
     -v "$(pwd)/.env:/workspace/.env:ro" \
+    -v "$CACHE_DIR/huggingface:/root/.cache/huggingface" \
+    -v "$CACHE_DIR/datasets:/root/.cache/datasets" \
     -w /workspace \
     -e PYTHONPATH=/workspace \
+    -e TRANSFORMERS_CACHE=/root/.cache/huggingface \
+    -e HF_HOME=/root/.cache/huggingface \
     -e CLEARML_S3_ENDPOINT=http://minio:9000 \
     -e CLEARML_S3_BUCKET=clearml-artifacts \
     -e CLEARML_S3_ACCESS_KEY=minioadmin \
@@ -71,6 +83,8 @@ docker run $DOCKER_ARGS \
         fi
         echo '✅ Конфигурация ClearML смонтирована в ~/.clearml.conf'
         echo '✅ Переменные окружения для MinIO установлены'
+        echo '✅ Кеш моделей смонтирован: /root/.cache/huggingface'
+        echo '💾 Модели будут кешироваться между запусками'
         python $SCRIPT_NAME $ARGS
     "
 

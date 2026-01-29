@@ -21,7 +21,6 @@ class HuggingFaceModel(BaseModel):
                 - temperature: Sampling temperature
                 - top_p: Nucleus sampling parameter
                 - device: Device to use (cuda/cpu)
-                - batch_size: Batch size for inference
                 - use_flash_attention: Whether to use flash attention
         """
         self.config = config
@@ -35,7 +34,6 @@ class HuggingFaceModel(BaseModel):
         self.top_p = config.get('top_p', 0.9)
         self.repetition_penalty = config.get('repetition_penalty', 1.1)  # Предотвращает зацикливание
         self.max_new_tokens = config.get('max_new_tokens', 150)  # Максимальная длина ответа
-        self.batch_size = config.get('batch_size', 32)
         
         # Device configuration
         device_config = config.get('device', 'cuda')
@@ -112,21 +110,58 @@ class HuggingFaceModel(BaseModel):
         Returns:
             Generated answer text
         """
-        # Format input using prompt template or default behavior
-        if prompt_template:
-            # Use custom prompt template from config
+        # Check if this is a Qwen3 model (from unsloth) that needs chat template with thinking disabled
+        is_qwen3 = 'Qwen3' in self.model_path or 'qwen3' in self.model_path.lower()
+        use_chat_template = is_qwen3 and hasattr(self.tokenizer, 'apply_chat_template')
+        
+        if use_chat_template:
+            # Use chat template for Qwen3 models with thinking disabled
+            messages = []
             if context and len(context) > 0:
                 context_str = "\n".join(context)
-                full_prompt = prompt_template.replace("{context}", context_str).replace("{question}", prompt)
+                messages.append({"role": "system", "content": f"Context: {context_str}"})
+            
+            if prompt_template:
+                # Use custom prompt template but format it as a user message
+                if context and len(context) > 0:
+                    context_str = "\n".join(context)
+                    user_content = prompt_template.replace("{context}", context_str).replace("{question}", prompt)
+                else:
+                    user_content = prompt_template.replace("{question}", prompt)
             else:
-                full_prompt = prompt_template.replace("{question}", prompt)
-        else:
-            # Fallback to original behavior
-            if context and len(context) > 0:
-                context_str = "\n".join(context)
-                full_prompt = f"Context: {context_str}\n\nQuestion: {prompt}\nAnswer:"
+                user_content = prompt
+            
+            messages.append({"role": "user", "content": user_content})
+            
+            # Apply chat template with thinking disabled for Qwen3
+            try:
+                full_prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False  # Explicitly disable thinking mode
+                )
+                self.logger.debug("Using Qwen3 chat template with thinking disabled")
+            except Exception as e:
+                self.logger.warning(f"Failed to apply chat template: {e}, falling back to simple format")
+                use_chat_template = False
+        
+        if not use_chat_template:
+            # Format input using prompt template or default behavior
+            if prompt_template:
+                # Use custom prompt template from config
+                if context and len(context) > 0:
+                    context_str = "\n".join(context)
+                    full_prompt = prompt_template.replace("{context}", context_str).replace("{question}", prompt)
+                else:
+                    full_prompt = prompt_template.replace("{question}", prompt)
             else:
-                full_prompt = f"Question: {prompt}\nAnswer:"
+                # Fallback to original behavior
+                if context and len(context) > 0:
+                    context_str = "\n".join(context)
+                    full_prompt = f"Context: {context_str}\n\nQuestion: {prompt}\nAnswer:"
+                else:
+                    full_prompt = f"Question: {prompt}\nAnswer:"
         
         # Store last prompt for logging
         self.last_prompt = full_prompt
@@ -172,17 +207,56 @@ class HuggingFaceModel(BaseModel):
             # Decode output
             generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            # Extract only the answer part (after "Answer:")
-            if "Answer:" in generated_text:
-                answer = generated_text.split("Answer:")[-1].strip()
+            # Extract only the answer part
+            if use_chat_template:
+                # For chat template format, extract assistant response
+                # Qwen3 chat template typically has assistant role markers
+                if "<|im_start|>assistant" in generated_text:
+                    answer = generated_text.split("<|im_start|>assistant")[-1].strip()
+                    # Remove any remaining role markers
+                    answer = re.sub(r'<\|im_end\|>.*$', '', answer, flags=re.DOTALL).strip()
+                elif "assistant" in generated_text.lower():
+                    # Fallback: try to find assistant response
+                    parts = re.split(r'assistant\s*:?\s*', generated_text, flags=re.IGNORECASE)
+                    if len(parts) > 1:
+                        answer = parts[-1].strip()
+                    else:
+                        answer = generated_text[len(full_prompt):].strip()
+                else:
+                    # If no assistant marker found, extract text after prompt
+                    answer = generated_text[len(full_prompt):].strip()
             else:
-                answer = generated_text[len(full_prompt):].strip()
+                # Original extraction logic for non-chat-template format
+                if "Answer:" in generated_text:
+                    answer = generated_text.split("Answer:")[-1].strip()
+                else:
+                    answer = generated_text[len(full_prompt):].strip()
             
             # Clean up the answer - убираем лишние пробелы и переносы строк
             # НЕ обрезаем по первой строке, так как ответ может быть многострочным
             answer = answer.strip()
             
             # Убираем повторяющиеся пробелы и переносы строк
+            answer = re.sub(r'\s+', ' ', answer).strip()
+            
+            # Remove thinking-related tags (Qwen3 thinking mode output)
+            # Remove <think>...</think> tags and their content (including empty tags)
+            answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.IGNORECASE | re.DOTALL)
+            # Also handle self-closing tags
+            answer = re.sub(r'<think\s*/>', '', answer, flags=re.IGNORECASE)
+            # Remove any remaining <think> or </think> tags
+            answer = re.sub(r'</?think>', '', answer, flags=re.IGNORECASE)
+            
+            # Remove thinking-related patterns if they still appear (fallback cleanup)
+            thinking_patterns = [
+                r'Step-by-Step Explanation:.*?(?=\w)',
+                r'Let me think.*?(?=\w)',
+                r'First,.*?(?=\w)',
+            ]
+            for pattern in thinking_patterns:
+                answer = re.sub(pattern, '', answer, flags=re.IGNORECASE | re.DOTALL)
+            
+            # Final cleanup - remove extra spaces that might have been created
             answer = re.sub(r'\s+', ' ', answer).strip()
             
             # Логируем полный сгенерированный текст для отладки (первые несколько раз)
