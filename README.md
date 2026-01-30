@@ -672,7 +672,8 @@ tmux attach -t experiment
 
 ```bash
 # Запуск всех экспериментов (все модели × все датасеты)
-poetry run python run_batch_experiments.py
+poetry shell
+python run_batch_experiments.py
 
 # Запуск с конкретными моделями и датасетами
 poetry run python run_batch_experiments.py --models qwen_0.6b qwen_1.7b --datasets local_simple_qa
@@ -688,6 +689,49 @@ poetry run python run_batch_experiments.py --retry-count 5
 ```
 
 **Примечание:** Скрипт должен запускаться через `poetry run python`, так как зависимости установлены в виртуальном окружении Poetry. Если вы используете активированное окружение Poetry (`poetry shell`), можно запускать напрямую `python run_batch_experiments.py`.
+
+#### Запуск в фоновом режиме (tmux):
+
+Для длительных экспериментов рекомендуется использовать `tmux` для запуска в фоновом режиме:
+
+```bash
+# 1. Создать новую сессию tmux
+tmux new-session -s experiments
+
+# 2. Внутри tmux выполнить команды:
+poetry shell
+python run_batch_experiments.py
+
+# 3. Отключиться от сессии (не убивая процесс): Ctrl+B, затем D
+# Или из терминала (если сессия запущена в фоне):
+tmux detach -s experiments
+
+# 4. Подключиться к сессии для просмотра прогресса
+tmux attach -t experiments
+
+# 5. Посмотреть список активных сессий
+tmux ls
+
+# 6. Убить сессию (если нужно остановить эксперименты)
+tmux kill-session -t experiments
+```
+
+**Запуск с параметрами через tmux:**
+```bash
+# 1. Создать новую сессию tmux
+tmux new-session -s experiments
+
+# 2. Внутри tmux выполнить команды:
+cd /home/dolganov/slm_experiments
+
+# С конкретными моделями и датасетами
+poetry run python run_batch_experiments.py --models qwen_0.6b qwen_1.7b --datasets local_simple_qa
+
+# Или с ограничением параллелизма
+poetry run python run_batch_experiments.py --max-parallel 2
+
+# 3. Отключиться от сессии: Ctrl+B, затем D
+```
 
 #### Как это работает:
 
