@@ -37,7 +37,7 @@ import threading
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
-from queue import Queue
+from queue import Queue, Empty as QueueEmpty
 from omegaconf import OmegaConf
 import yaml
 
@@ -517,6 +517,11 @@ class BatchExperimentRunner:
                 if task is None:  # Сигнал завершения
                     break
                 
+                # Сразу отмечаем задачу как обрабатываемую, чтобы основной цикл не завершился преждевременно
+                with self.lock:
+                    task.status = "waiting_for_gpu"
+                    self.running_tasks[worker_id] = task
+                
                 # Ищем доступную GPU
                 # Будем периодически проверять освобождение GPU без ограничения по времени
                 # Это позволяет запускать эксперименты по мере освобождения GPU
@@ -553,45 +558,83 @@ class BatchExperimentRunner:
                     # Сохраняем информацию о GPU в задаче
                     task.gpu_id = gpu_id
                     
-                    # Отмечаем задачу как выполняющуюся
+                    # Обновляем статус задачи на "running"
                     with self.lock:
                         task.status = "running"
+                        # Задача уже в running_tasks, просто обновляем статус
                         self.running_tasks[worker_id] = task
                     
                     logger.info(f"🎯 Воркер {worker_id}: {task.model} × {task.dataset} назначен на GPU {gpu_id}")
                     
-                    # Запускаем эксперимент
-                    success = self.run_experiment(task, gpu_id)
-                    
-                    # Освобождаем GPU
-                    self.gpu_monitor.release_gpu(gpu_id, task.task_id)
-                    
-                    # Обновляем статус
-                    with self.lock:
-                        if success:
-                            task.status = "completed"
-                            self.completed_tasks.append(task)
-                        else:
-                            # Повторяем при ошибке
-                            if task.retry_count < task.max_retries:
-                                task.retry_count += 1
-                                task.status = "pending"
-                                task.gpu_id = None  # Сбрасываем GPU для повторной попытки
-                                logger.info(f"🔄 Повтор {task.retry_count}/{task.max_retries}: {task.model} × {task.dataset}")
-                                self.task_queue.put(task)  # Возвращаем в очередь
-                            else:
-                                task.status = "failed"
-                                self.failed_tasks.append(task)
-                                logger.error(f"❌ Превышено количество попыток: {task.model} × {task.dataset}")
+                    success = False
+                    try:
+                        # Запускаем эксперимент
+                        success = self.run_experiment(task, gpu_id)
+                    except Exception as exp_error:
+                        logger.error(f"❌ Исключение при выполнении эксперимента {task.model} × {task.dataset}: {exp_error}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        success = False
+                    finally:
+                        # Всегда освобождаем GPU и удаляем задачу из running_tasks
+                        try:
+                            self.gpu_monitor.release_gpu(gpu_id, task.task_id)
+                        except Exception as release_error:
+                            logger.error(f"❌ Ошибка при освобождении GPU {gpu_id}: {release_error}")
                         
-                        del self.running_tasks[worker_id]
+                        # Обновляем статус
+                        with self.lock:
+                            if success:
+                                task.status = "completed"
+                                self.completed_tasks.append(task)
+                            else:
+                                # Повторяем при ошибке
+                                if task.retry_count < task.max_retries:
+                                    task.retry_count += 1
+                                    task.status = "pending"
+                                    task.gpu_id = None  # Сбрасываем GPU для повторной попытки
+                                    logger.info(f"🔄 Повтор {task.retry_count}/{task.max_retries}: {task.model} × {task.dataset}")
+                                    self.task_queue.put(task)  # Возвращаем в очередь
+                                else:
+                                    task.status = "failed"
+                                    self.failed_tasks.append(task)
+                                    logger.error(f"❌ Превышено количество попыток: {task.model} × {task.dataset}")
+                            
+                            # Всегда удаляем задачу из running_tasks
+                            if worker_id in self.running_tasks:
+                                del self.running_tasks[worker_id]
                 
                 self.task_queue.task_done()
                 
+            except QueueEmpty:
+                # Это нормально - просто продолжаем ждать
+                continue
             except Exception as e:
                 logger.error(f"❌ Ошибка в воркере {worker_id}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
+                # Убеждаемся, что задача удалена из running_tasks при ошибке
+                with self.lock:
+                    if worker_id in self.running_tasks:
+                        task = self.running_tasks[worker_id]
+                        logger.error(f"❌ Задача {task.model} × {task.dataset} была прервана из-за ошибки в воркере")
+                        # Освобождаем GPU если она была назначена
+                        if task.gpu_id is not None:
+                            try:
+                                self.gpu_monitor.release_gpu(task.gpu_id, task.task_id)
+                            except Exception as release_error:
+                                logger.error(f"❌ Ошибка при освобождении GPU {task.gpu_id}: {release_error}")
+                        # Помечаем задачу как failed
+                        task.status = "failed"
+                        task.failure_reason = f"Ошибка в воркере: {str(e)}"
+                        self.failed_tasks.append(task)
+                        del self.running_tasks[worker_id]
+                    # Если задача была получена, но еще не обработана, помечаем task_done
+                    try:
+                        self.task_queue.task_done()
+                    except ValueError:
+                        # task_done уже был вызван или задача не была получена
+                        pass
     
     def run(self):
         """Запустить все эксперименты."""
@@ -617,6 +660,11 @@ class BatchExperimentRunner:
         # Мониторинг прогресса
         last_report_time = time.time()
         while not self.task_queue.empty() or self.running_tasks:
+            # Логируем состояние цикла для отладки
+            queue_size = self.task_queue.qsize()
+            running_count = len(self.running_tasks)
+            if queue_size > 0 or running_count > 0:
+                logger.debug(f"🔍 Состояние: очередь={queue_size}, выполняющихся={running_count}")
             time.sleep(10)
             
             # Периодический отчет о прогрессе
@@ -705,7 +753,15 @@ class BatchExperimentRunner:
                 
                 last_report_time = time.time()
         
+        # Дополнительная проверка перед завершением
+        logger.info(f"🔍 Проверка перед завершением: очередь={self.task_queue.qsize()}, выполняющихся={len(self.running_tasks)}")
+        if self.running_tasks:
+            logger.warning(f"⚠️  Обнаружены выполняющиеся задачи перед завершением: {list(self.running_tasks.keys())}")
+            # Ждем еще немного, чтобы дать воркерам время завершиться
+            time.sleep(5)
+        
         # Ждем завершения всех воркеров
+        logger.info("🛑 Отправка сигналов завершения воркерам...")
         for _ in workers:
             self.task_queue.put(None)  # Сигнал завершения
         
