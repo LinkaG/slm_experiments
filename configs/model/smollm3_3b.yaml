@@ -1,0 +1,12 @@
+name: smollm3_3b
+model_type: huggingface
+model_size: 3B
+model_path: HuggingFaceTB/SmolLM3-3B
+max_length: 512
+temperature: 0.2  # Низкая температура для фактологических ответов (меньше "сочинительства")
+top_p: 0.95  # Более консервативный top_p
+repetition_penalty: 1.1  # Умеренный штраф за повторения
+max_new_tokens: 50  # Короткие конкретные ответы для фактологических вопросов
+device: cuda
+use_flash_attention: false  # flash_attn not installed
+

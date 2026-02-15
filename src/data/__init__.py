@@ -22,6 +22,15 @@ def get_dataset(config):
             from .simple_qa_dataset import SimpleQADataset
             return SimpleQADataset(dict(config))
     
+    elif dataset_type == 'mirage':
+        if use_local:
+            from .local_mirage_dataset import LocalMirageDataset
+            return LocalMirageDataset(dict(config))
+        else:
+            # MIRAGE пока поддерживается только локально
+            from .local_mirage_dataset import LocalMirageDataset
+            return LocalMirageDataset(dict(config))
+    
     else:
         # Dummy dataset for testing
         from .base import BaseDataset, DatasetItem

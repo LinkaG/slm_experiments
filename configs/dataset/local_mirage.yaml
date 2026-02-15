@@ -1,0 +1,7 @@
+name: local_mirage
+type: mirage
+use_local: true
+train_path: data/mirage/mirage_converted.json
+eval_path: data/mirage/mirage_converted.json
+cache_dir: .cache/datasets
+

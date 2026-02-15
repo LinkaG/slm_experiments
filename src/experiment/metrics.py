@@ -12,24 +12,30 @@ class TokenRecallCalculator:
         Args:
             tokenizer: Pre-initialized tokenizer (preferred - uses model's tokenizer)
             tokenizer_name: Tokenizer name to load (fallback if tokenizer not provided)
+        
+        Note: If neither tokenizer nor tokenizer_name is provided, the calculator
+        will work without a tokenizer. The get_tokens() method uses regex and doesn't
+        require a tokenizer, so this is safe.
         """
         if tokenizer is not None:
             self.tokenizer = tokenizer
         elif tokenizer_name:
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         else:
-            # Fallback to a general tokenizer (but this is not ideal)
-            self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+            # Don't load tokenizer if not needed - get_tokens() uses regex only
+            # This avoids unnecessary downloads and dependency issues
+            self.tokenizer = None
     
     def get_tokens(self, text) -> Set[str]:
         """
-        Convert text to a set of normalized tokens.
+        Convert text to a set of normalized word tokens.
+        Tokens are individual words (split by whitespace and punctuation).
         
         Args:
             text: Input text (str, list, or other)
             
         Returns:
-            Set of normalized token strings
+            Set of normalized word strings
         """
         # Handle list of answers
         if isinstance(text, list):
@@ -41,28 +47,13 @@ class TokenRecallCalculator:
         
         if not text.strip():
             return set()
-            
-        # Tokenize
-        try:
-            tokens = self.tokenizer.tokenize(text)
-        except Exception as e:
-            # Fallback to simple whitespace tokenization if tokenizer fails
-            tokens = text.lower().split()
         
-        # Normalize tokens: remove subword markers and special characters
-        normalized_tokens = []
-        for token in tokens:
-            # Remove WordPiece subword markers (##, ▁, etc.)
-            normalized = re.sub(r'^##|^▁|^Ġ', '', token)
-            # Remove special tokens markers
-            normalized = re.sub(r'^<|>$', '', normalized)
-            # Convert to lowercase for case-insensitive comparison
-            normalized = normalized.lower().strip()
-            # Skip empty tokens and very short tokens (likely artifacts)
-            if normalized and len(normalized) > 0:
-                normalized_tokens.append(normalized)
+        # Extract words: sequences of letters, digits, and common word characters
+        # This splits on whitespace and punctuation, keeping only words
+        words = re.findall(r'\b\w+\b', text.lower())
         
-        return set(normalized_tokens)
+        # Filter out empty strings and return unique words
+        return set(word for word in words if word)
     
     def calculate_recall(self, predicted: str, ground_truth) -> float:
         """Calculate token-based recall between predicted and ground truth texts."""

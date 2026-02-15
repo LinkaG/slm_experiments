@@ -57,7 +57,7 @@ CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
 poetry run python run_experiment_simple.py --no-clearml
 
 # Для запуска с другими параметрами - отредактируйте configs/config.yaml:
-# - dataset: local_nq или local_simple_qa
+# - dataset: local_nq / local_simple_qa / local_mirage
 # - model: smollm2_135m, smollm2_360m, smollm2_1.7b
 # - experiment_mode: no_context, test_10_samples, test_100_samples
 ```
@@ -334,22 +334,98 @@ Docker использует кэш для неизмененных слоев, �
    - Исходный файл: `data/nq/NQ-open.dev.merged.jsonl`
    - Конвертированный для RAG тестирования
 
-2. **Конвертация данных**:
-   ```bash
-   # Конвертация полного датасета
-   poetry run python convert_nq_data.py \
-     --input data/nq/NQ-open.dev.merged.jsonl \
-     --output data/nq/nq_full_dataset.json
-   ```
+2. **SimpleQA**:
+   - Конвертированный датасет: `data/simple_qa/simple_qa_converted.json`
+   - Исходный файл: `data/simple_qa/simple_qa_test_set_with_documents.csv`
 
-3. **Тестирование загрузки данных**:
-   ```bash
-   # Тест NQ данных
-   poetry run python test_local_data.py
-   
-   # Тест SimpleQA данных
-   poetry run python test_simple_qa_data.py
-   ```
+3. **MIRAGE**:
+   - Конвертированный датасет: `data/mirage/mirage_converted.json`
+   - Исходные файлы: `MIRAGE/mirage/dataset.json` и `MIRAGE/mirage/oracle.json`
+   - Датасет содержит вопросы, ответы и ссылки на документы (в основном Wikipedia)
+   - Автоматически скачивает документы по URL и очищает HTML разметку
+   - Интегрирует `doc_chunk` из `oracle.json` как `long_answer` для каждого вопроса
+
+### Конвертация данных
+
+#### Natural Questions (NQ):
+```bash
+# Конвертация полного датасета
+poetry run python convert_nq_data.py \
+  --input data/nq/NQ-open.dev.merged.jsonl \
+  --output data/nq/nq_full_dataset.json
+```
+
+#### SimpleQA:
+```bash
+# Конвертация SimpleQA датасета
+poetry run python convert_simple_qa_data.py \
+  --input data/simple_qa/simple_qa_test_set_with_documents.csv \
+  --output data/simple_qa/simple_qa_converted.json
+```
+
+#### MIRAGE:
+```bash
+# Конвертация MIRAGE датасета с загрузкой документов
+poetry run python convert_mirage_data.py \
+  --input MIRAGE/mirage/dataset.json \
+  --output data/mirage/mirage_converted.json \
+  --oracle-file MIRAGE/mirage/oracle.json
+
+# Без загрузки документов (если документы уже скачаны)
+poetry run python convert_mirage_data.py \
+  --input MIRAGE/mirage/dataset.json \
+  --output data/mirage/mirage_converted.json \
+  --oracle-file MIRAGE/mirage/oracle.json \
+  --no-download
+
+# Ограничение количества элементов (для тестирования)
+poetry run python convert_mirage_data.py \
+  --input MIRAGE/mirage/dataset.json \
+  --output data/mirage/mirage_converted.json \
+  --oracle-file MIRAGE/mirage/oracle.json \
+  --max-items 100
+
+# С настройкой задержки между запросами (для избежания rate limiting)
+poetry run python convert_mirage_data.py \
+  --input MIRAGE/mirage/dataset.json \
+  --output data/mirage/mirage_converted.json \
+  --oracle-file MIRAGE/mirage/oracle.json \
+  --delay 1.0
+```
+
+**Особенности конвертации MIRAGE**:
+- Автоматически скачивает документы по `doc_url` из каждого элемента датасета
+- Очищает HTML разметку (особенно для Wikipedia страниц)
+- Извлекает `doc_chunk` из `oracle.json` по `query_id` и добавляет как `long_answer`
+- Кеширует скачанные документы в `.cache/mirage_docs/` для ускорения повторных запусков
+- Поддерживает задержку между запросами для избежания блокировок
+
+**Формат конвертированного MIRAGE датасета**:
+```json
+{
+  "question": "What is John Mayne's occupation?",
+  "answer": "journalist",
+  "context": "John Mayne (26 March 1759 – 14 March 1836) was a Scottish journalist...",
+  "metadata": {
+    "id": "ce40d2c4-f403-4736-ace1-7fca9c722aba",
+    "url": "https://en.wikipedia.org/wiki?curid=1098597",
+    "title": "John Mayne",
+    "source": "popqa",
+    "all_answers": ["journalist", "journo", "journalists"],
+    "long_answer": "Scottish printer, journalist and poet\nJohn Mayne...",
+    "long_context": ["Scottish printer, journalist and poet\nJohn Mayne..."]
+  }
+}
+```
+
+### Тестирование загрузки данных
+```bash
+# Тест NQ данных
+poetry run python test_local_data.py
+
+# Тест SimpleQA данных
+poetry run python test_simple_qa_data.py
+```
 
 ### S3 данные (опционально)
 
@@ -618,6 +694,7 @@ tmux attach -t experiment
 **Датасеты** (в defaults: dataset):
 - `local_nq` - Natural Questions (локально, 3610 примеров)
 - `local_simple_qa` - SimpleQA (локально)
+- `local_mirage` - MIRAGE (локально, с автоматической загрузкой документов)
 - `rag_nq` - Natural Questions (для RAG экспериментов)
 
 **Режимы экспериментов** (в defaults: experiment_mode):
@@ -760,7 +837,7 @@ poetry run python run_batch_experiments.py --max-parallel 2
 ```
 📦 Автоопределение моделей: ['qwen_0.6b', 'qwen_1.7b', 'qwen_4b', 'smollm2_1.7b', 'smollm2_135m', 'smollm2_360m']
    Всего моделей: 6
-📊 Автоопределение датасетов: ['local_nq', 'local_simple_qa', 'rag_nq']
+📊 Автоопределение датасетов: ['local_mirage', 'local_nq', 'local_simple_qa', 'rag_nq']
    Всего датасетов: 3
 🎯 Всего будет запущено экспериментов: 18 (6 моделей × 3 датасета)
 ✅ Настроено для использования всех 4 GPU параллельно
@@ -891,6 +968,8 @@ slm_experiments/
 │   └── simple_qa/          # SimpleQA
 │       ├── simple_qa_test_set_with_documents.csv  # Исходный файл
 │       └── simple_qa_converted.json     # Конвертированный датасет
+│   └── mirage/             # MIRAGE
+│       └── mirage_converted.json        # Конвертированный датасет
 ├── configs/                # Конфигурации Hydra
 │   ├── model/             # Конфигурации моделей
 │   ├── dataset/           # Конфигурации датасетов
@@ -908,6 +987,7 @@ slm_experiments/
 ├── run_experiment_simple.py  # Основной скрипт запуска
 ├── convert_nq_data.py     # Скрипт конвертации NQ данных
 ├── convert_simple_qa_data.py  # Скрипт конвертации SimpleQA данных
+├── convert_mirage_data.py # Скрипт конвертации MIRAGE данных с загрузкой документов
 ├── test_local_data.py     # Тест загрузки локальных NQ данных
 ├── test_simple_qa_data.py  # Тест загрузки локальных SimpleQA данных
 ├── upload_to_s3.py        # Загрузка данных в S3
@@ -945,7 +1025,7 @@ poetry run python run_experiment_simple.py --no-clearml
 # Отредактируйте configs/config.yaml, измените:
 # - experiment_mode: no_context (все данные) / test_10_samples / test_100_samples
 # - model: smollm2_135m / smollm2_360m / smollm2_1.7b
-# - dataset: local_nq / local_simple_qa
+# - dataset: local_nq / local_simple_qa / local_mirage
 ```
 
 ### Настройка ClearML:

@@ -14,7 +14,7 @@ def get_model(config):
     """
     model_type = config.get('model_type', 'huggingface')
     
-    if model_type in ['smollm2', 'qwen', 'huggingface']:
+    if model_type in ['smollm2', 'qwen', 'huggingface', 'minicpm4']:
         # All these models use HuggingFace implementation
         return HuggingFaceModel(dict(config))
     else:
