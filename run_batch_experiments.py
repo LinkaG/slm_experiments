@@ -407,7 +407,7 @@ class BatchExperimentRunner:
         
         # Определяем пути и настройки Docker
         workspace_dir = os.getcwd()
-        cache_dir = os.path.expanduser("~/.cache/docker-models")
+        cache_dir = os.environ.get("DOCKER_MODELS_CACHE", "/storage/docker-models")
         image_name = "slm-experiments:latest"
         network_name = "clearml_backend"
         

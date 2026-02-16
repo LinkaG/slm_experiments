@@ -4,8 +4,64 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from typing import List, Optional
 import logging
 import re
+import os
+import time
 
 from .base import BaseModel
+
+# Try to import huggingface_hub for download progress tracking
+try:
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import tqdm as hf_tqdm
+    HAS_HF_HUB = True
+except ImportError:
+    HAS_HF_HUB = False
+
+# Try to import tqdm for progress bars
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
+
+class DownloadProgressCallback:
+    """Callback для отслеживания прогресса загрузки файлов модели."""
+    
+    def __init__(self, logger):
+        self.logger = logger
+        self.current_file = None
+        self.file_start_time = None
+        self.last_log_time = 0
+        self.log_interval = 2.0  # Логировать каждые 2 секунды
+    
+    def __call__(self, chunk_size, total_size=None):
+        """Вызывается при загрузке каждого чанка."""
+        import time
+        current_time = time.time()
+        
+        # Логируем прогресс только периодически, чтобы не засорять логи
+        if current_time - self.last_log_time >= self.log_interval:
+            if total_size:
+                downloaded_mb = (chunk_size * 100) / (1024 * 1024) if chunk_size else 0
+                total_mb = total_size / (1024 * 1024)
+                percent = (chunk_size / total_size * 100) if total_size > 0 else 0
+                self.logger.info(f"   📥 Загружено: {downloaded_mb:.1f} MB / {total_mb:.1f} MB ({percent:.1f}%)")
+            else:
+                downloaded_mb = chunk_size / (1024 * 1024) if chunk_size else 0
+                self.logger.info(f"   📥 Загружено: {downloaded_mb:.1f} MB")
+            
+            self.last_log_time = current_time
+
+
+# Monkey-patch для исправления проблемы совместимости torch.is_autocast_enabled()
+# Некоторые модели (например, Nanbeige) вызывают torch.is_autocast_enabled(device),
+# но в PyTorch 2.2+ эта функция не принимает аргументов
+_original_is_autocast_enabled = torch.is_autocast_enabled
+def _patched_is_autocast_enabled(*args, **kwargs):
+    """Обертка для torch.is_autocast_enabled, игнорирующая аргументы."""
+    return _original_is_autocast_enabled()
+torch.is_autocast_enabled = _patched_is_autocast_enabled
 
 
 class HuggingFaceModel(BaseModel):
@@ -45,26 +101,46 @@ class HuggingFaceModel(BaseModel):
             self.logger.info("💻 Using CPU")
         
         # Load model and tokenizer
-        self.logger.info(f"📦 Loading model: {self.model_path}")
+        self.logger.info(f"📦 Начало загрузки модели: {self.model_path}")
         
         try:
+            # Check if model is cached
+            cache_dir = os.environ.get('HF_HOME') or os.environ.get('TRANSFORMERS_CACHE') or os.path.expanduser('~/.cache/huggingface')
+            self.logger.info(f"💾 Кэш моделей: {cache_dir}")
+            
+            # Получаем токен HuggingFace из конфига или переменной окружения
+            hf_token = config.get('hf_token') or os.environ.get('HF_TOKEN') or os.environ.get('HUGGINGFACE_HUB_TOKEN')
+            if hf_token:
+                self.logger.info("🔑 Используется HuggingFace token для доступа к модели")
+            
+            token_kwargs = {'trust_remote_code': True}
+            if hf_token:
+                token_kwargs['token'] = hf_token
+            
             # Load tokenizer
+            self.logger.info("📥 Загрузка токенайзера...")
+            tokenizer_start_time = time.time()
             # Используем use_fast=False для совместимости со старыми версиями tokenizers
             # Если возникает ошибка ModelWrapper, это поможет использовать медленный токенайзер
             try:
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True,
-                    use_fast=True
+                    use_fast=True,
+                    **token_kwargs
                 )
+                self.logger.info("✅ Токенайзер загружен (быстрый режим)")
             except Exception as e:
-                self.logger.warning(f"Не удалось загрузить быстрый токенайзер: {e}")
-                self.logger.info("Пробуем использовать медленный токенайзер...")
+                self.logger.warning(f"⚠️  Не удалось загрузить быстрый токенайзер: {e}")
+                self.logger.info("🔄 Пробуем использовать медленный токенайзер...")
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True,
-                    use_fast=False
+                    use_fast=False,
+                    **token_kwargs
                 )
+                self.logger.info("✅ Токенайзер загружен (медленный режим)")
+            
+            tokenizer_time = time.time() - tokenizer_start_time
+            self.logger.info(f"⏱️  Время загрузки токенайзера: {tokenizer_time:.2f} сек")
             
             # Set padding token if not set
             if self.tokenizer.pad_token is None:
@@ -74,29 +150,76 @@ class HuggingFaceModel(BaseModel):
             torch_dtype = self._get_torch_dtype()
             
             # Load model
+            self.logger.info("📥 Загрузка модели (это может занять некоторое время)...")
+            model_start_time = time.time()
+            
             model_kwargs = {
                 'trust_remote_code': True,
                 'torch_dtype': torch_dtype,
             }
+            if hf_token:
+                model_kwargs['token'] = hf_token
             
             # Add flash attention if requested and available
             if config.get('use_flash_attention', False):
                 model_kwargs['attn_implementation'] = 'flash_attention_2'
-                self.logger.info("⚡ Using Flash Attention 2")
+                self.logger.info("⚡ Используется Flash Attention 2")
+            
+            # Log download progress
+            self.logger.info("📥 Загрузка файлов модели из Hugging Face Hub...")
+            
+            # Включаем прогресс-бары Hugging Face Hub
+            # Они будут выводиться в stderr и перехватываться run_batch_experiments.py
+            os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '0'
+            
+            # Определяем путь к кэшу модели для отслеживания прогресса
+            from pathlib import Path
+            model_cache_name = self.model_path.replace('/', '--')
+            model_cache_path = Path(cache_dir) / 'models' / f'models--{model_cache_name}'
+            
+            # Проверяем, есть ли модель в кэше
+            if model_cache_path.exists():
+                self.logger.info(f"   ✅ Модель найдена в кэше: {model_cache_path}")
+                # Подсчитываем размер файлов в кэше
+                total_size = sum(f.stat().st_size for f in model_cache_path.rglob('*') if f.is_file())
+                total_size_gb = total_size / (1024 ** 3)
+                self.logger.info(f"   💾 Размер кэшированных файлов: {total_size_gb:.2f} GB")
+            else:
+                self.logger.info(f"   ⏳ Модель не найдена в кэше, начинается загрузка...")
+                self.logger.info(f"   📥 Прогресс загрузки будет отображаться в логах ниже (stderr)")
             
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
                 **model_kwargs
             )
             
+            # После загрузки проверяем размер файлов
+            if model_cache_path.exists():
+                total_size = sum(f.stat().st_size for f in model_cache_path.rglob('*') if f.is_file())
+                total_size_gb = total_size / (1024 ** 3)
+                self.logger.info(f"   ✅ Файлы модели загружены, размер: {total_size_gb:.2f} GB")
+            
+            model_load_time = time.time() - model_start_time
+            self.logger.info(f"✅ Файлы модели загружены за {model_load_time:.2f} сек")
+            
+            # Move model to device
+            self.logger.info(f"🚀 Перенос модели на устройство: {self.device}...")
+            device_start_time = time.time()
             self.model.to(self.device)
             self.model.eval()
+            device_time = time.time() - device_start_time
+            self.logger.info(f"✅ Модель перенесена на {self.device} за {device_time:.2f} сек")
             
-            self.logger.info(f"✅ Model loaded successfully on {self.device}")
+            total_time = time.time() - tokenizer_start_time
+            self.logger.info(f"✅ Модель полностью загружена за {total_time:.2f} сек")
             
             # Log model info
             num_params = sum(p.numel() for p in self.model.parameters())
-            self.logger.info(f"📊 Model parameters: {num_params:,}")
+            self.logger.info(f"📊 Параметров модели: {num_params:,}")
+            
+            # Log model size
+            model_size_gb = self.get_model_size() / (1024 ** 3)
+            self.logger.info(f"💾 Размер модели в памяти: {model_size_gb:.2f} GB")
             
         except Exception as e:
             self.logger.error(f"❌ Error loading model: {e}")
@@ -247,7 +370,23 @@ class HuggingFaceModel(BaseModel):
                     # Greedy decoding для очень низкой температуры
                     generate_kwargs['do_sample'] = False
                 
-                outputs = self.model.generate(**generate_kwargs)
+                # Попытка генерации с обработкой ошибки совместимости autocast
+                # Некоторые модели (например, Nanbeige) имеют проблему совместимости с PyTorch 2.2+
+                # где torch.is_autocast_enabled() не принимает аргументы
+                try:
+                    outputs = self.model.generate(**generate_kwargs)
+                except (TypeError, AttributeError) as e:
+                    error_msg = str(e)
+                    if "is_autocast_enabled() takes no arguments" in error_msg or "is_autocast_enabled" in error_msg:
+                        # Исправление для моделей с проблемой совместимости autocast
+                        # Отключаем autocast явно через контекстный менеджер
+                        self.logger.warning(f"⚠️  Обнаружена проблема совместимости autocast, отключаю autocast для генерации")
+                        # Используем torch.cuda.amp.autocast с enabled=False для отключения autocast
+                        with torch.cuda.amp.autocast(enabled=False):
+                            outputs = self.model.generate(**generate_kwargs)
+                    else:
+                        # Передаем ошибку дальше, если это не проблема autocast
+                        raise
             
             # Decode output
             generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)

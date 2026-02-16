@@ -37,7 +37,7 @@ echo "📦 Используется конфигурация: clearml.conf.docke
 
 # Создаем директорию для кеша моделей на хосте (если не существует)
 # Можно переопределить через переменную окружения DOCKER_MODELS_CACHE
-CACHE_DIR="${DOCKER_MODELS_CACHE:-${HOME}/.cache/docker-models}"
+CACHE_DIR="${DOCKER_MODELS_CACHE:-/storage/docker-models}"
 mkdir -p "$CACHE_DIR/huggingface"
 mkdir -p "$CACHE_DIR/datasets"
 echo "💾 Кеш моделей: $CACHE_DIR"

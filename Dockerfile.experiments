@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir \
     hydra-core \
     "transformers>=4.40.0" \
     tqdm \
-    pandas
+    pandas \
+    "sentencepiece>=0.1.91"
 
 # Установка зависимостей проекта (если есть requirements.txt)
 # COPY requirements.txt .

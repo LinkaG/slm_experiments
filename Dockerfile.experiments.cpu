@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir \
     torch \
     transformers \
     tqdm \
-    pandas
+    pandas \
+    "sentencepiece>=0.1.91"
 
 # По умолчанию запускаем bash
 CMD ["bash"]
