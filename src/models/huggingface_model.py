@@ -1,6 +1,6 @@
 """HuggingFace model implementation."""
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from typing import List, Optional
 import logging
 import re
@@ -26,9 +26,9 @@ class HuggingFaceModel(BaseModel):
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.last_prompt = None  # Store last used prompt for logging
+        self.model_path = config.get('model_path', 'gpt2')
         
         # Extract config parameters
-        self.model_path = config.get('model_path', 'gpt2')
         self.max_length = config.get('max_length', 512)
         self.temperature = config.get('temperature', 0.7)
         self.top_p = config.get('top_p', 0.9)
@@ -70,10 +70,13 @@ class HuggingFaceModel(BaseModel):
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             
+            # Determine dtype: use model's preferred format (bf16/fp16) if GPU supports it
+            torch_dtype = self._get_torch_dtype()
+            
             # Load model
             model_kwargs = {
                 'trust_remote_code': True,
-                'torch_dtype': torch.float16 if self.device.type == 'cuda' else torch.float32,
+                'torch_dtype': torch_dtype,
             }
             
             # Add flash attention if requested and available
@@ -98,6 +101,48 @@ class HuggingFaceModel(BaseModel):
         except Exception as e:
             self.logger.error(f"❌ Error loading model: {e}")
             raise
+    
+    def _get_torch_dtype(self) -> torch.dtype:
+        """Determine optimal dtype: use model's preferred format (bf16/fp16) if GPU supports it.
+        
+        - CPU: always float32
+        - CUDA: prefer model's torch_dtype from config (bf16 for modern models)
+        - Fallback to fp16 if model wants bf16 but GPU doesn't support it (e.g. V100)
+        """
+        if self.device.type != 'cuda':
+            return torch.float32
+        
+        try:
+            config = AutoConfig.from_pretrained(self.model_path, trust_remote_code=True)
+            model_dtype = getattr(config, 'torch_dtype', None)
+            
+            if model_dtype is not None:
+                # Convert string from config.json to torch dtype (config may store as "bfloat16")
+                if isinstance(model_dtype, str):
+                    dtype_map = {
+                        'bfloat16': torch.bfloat16,
+                        'float16': torch.float16,
+                        'float32': torch.float32,
+                    }
+                    model_dtype = dtype_map.get(model_dtype.lower(), torch.float16)
+                elif not isinstance(model_dtype, torch.dtype):
+                    model_dtype = torch.float16
+                
+                # Model wants bf16: use it only if GPU supports it (H100, A100, etc.)
+                if model_dtype == torch.bfloat16:
+                    if torch.cuda.is_bf16_supported():
+                        self.logger.info("🎯 Using bf16 (model supports it, GPU supports it)")
+                        return torch.bfloat16
+                    self.logger.info("⚠️ Model prefers bf16 but GPU doesn't support it, using fp16")
+                    return torch.float16
+                
+                if model_dtype in (torch.float16, torch.float32):
+                    self.logger.info(f"🎯 Using {model_dtype} (from model config)")
+                    return model_dtype
+        except Exception as e:
+            self.logger.warning(f"Could not get model dtype from config: {e}")
+        
+        return torch.float16
     
     def generate(self, prompt: str, context: Optional[List[str]] = None, prompt_template: Optional[str] = None) -> str:
         """Generate answer for the given prompt.

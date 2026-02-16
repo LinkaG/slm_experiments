@@ -23,8 +23,10 @@ echo "📝 Добавление GPG ключа..."
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 
 # Добавляем репозиторий
-echo "📦 Добавление репозитория..."
-curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
+# Ubuntu 24.04 и другие новые дистрибутивы не в distribution-specific списке.
+# Используем generic DEB репозиторий (подходит для Ubuntu, Debian).
+echo "📦 Добавление репозитория (generic deb)..."
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
   tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 

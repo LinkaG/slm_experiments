@@ -1,7 +1,7 @@
-name: qwen_4b
-model_type: qwen
-model_size: 4B
-model_path: unsloth/Qwen3-4B
+name: olmo3_7b
+model_type: huggingface
+model_size: 7B
+model_path: allenai/Olmo-3-1025-7B
 max_length: 512
 temperature: 0.2  # Низкая температура для фактологических ответов (меньше "сочинительства")
 top_p: 0.95  # Более консервативный top_p
@@ -9,3 +9,4 @@ repetition_penalty: 1.1  # Умеренный штраф за повторени
 max_new_tokens: 50  # Короткие конкретные ответы для фактологических вопросов
 device: cuda
 use_flash_attention: false  # flash_attn not installed
+

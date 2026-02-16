@@ -1,7 +1,7 @@
-name: qwen_0.6b
-model_type: qwen
-model_size: 0.6B
-model_path: unsloth/Qwen3-0.6B
+name: smollm3_3b
+model_type: huggingface
+model_size: 3B
+model_path: HuggingFaceTB/SmolLM3-3B
 max_length: 512
 temperature: 0.2  # Низкая температура для фактологических ответов (меньше "сочинительства")
 top_p: 0.95  # Более консервативный top_p
@@ -9,3 +9,4 @@ repetition_penalty: 1.1  # Умеренный штраф за повторени
 max_new_tokens: 50  # Короткие конкретные ответы для фактологических вопросов
 device: cuda
 use_flash_attention: false  # flash_attn not installed
+
