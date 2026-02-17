@@ -17,10 +17,12 @@ RUN pip install --no-cache-dir \
     omegaconf \
     hydra-core \
     torch \
-    transformers \
+    "transformers>=4.40.0,<5.0.0" \
     tqdm \
     pandas \
-    "sentencepiece>=0.1.91"
+    "sentencepiece>=0.1.91" \
+    psutil \
+    safetensors
 
 # По умолчанию запускаем bash
 CMD ["bash"]

@@ -23,6 +23,13 @@ if ! docker network inspect "$CLEARML_NETWORK" > /dev/null 2>&1; then
     exit 1
 fi
 
+# Загружаем переменные из .env (DOCKER_MODELS_CACHE и др.)
+if [ -f .env ]; then
+    set -a
+    . ./.env
+    set +a
+fi
+
 # Определяем, использовать ли GPU
 USE_GPU=false
 if docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi > /dev/null 2>&1; then
@@ -36,7 +43,7 @@ echo "🚀 Запуск $SCRIPT_NAME через Docker сеть $CLEARML_NETWORK
 echo "📦 Используется конфигурация: clearml.conf.docker"
 
 # Создаем директорию для кеша моделей на хосте (если не существует)
-# Можно переопределить через переменную окружения DOCKER_MODELS_CACHE
+# Путь задаётся в .env (DOCKER_MODELS_CACHE) или переменной окружения
 CACHE_DIR="${DOCKER_MODELS_CACHE:-/storage/docker-models}"
 mkdir -p "$CACHE_DIR/huggingface"
 mkdir -p "$CACHE_DIR/datasets"

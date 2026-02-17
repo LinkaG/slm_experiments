@@ -27,8 +27,8 @@ def get_model(config):
             def __init__(self, config):
                 self.config = config
                 
-            def generate(self, prompt: str, context: list = None) -> str:
-                """Generate answer."""
+            def generate(self, prompt: str, context: list = None, prompt_template: str = None, **kwargs) -> str:
+                """Generate answer. Accepts same interface as HuggingFaceModel for compatibility."""
                 return "Test answer"
             
             def get_model_size(self) -> int:

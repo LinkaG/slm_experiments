@@ -417,7 +417,7 @@ def main():
     parser.add_argument(
         '--outputs-dir',
         type=str,
-        default='outputs_2',
+        default='outputs',
         help='Директория с результатами экспериментов (по умолчанию: outputs_2)'
     )
     parser.add_argument(

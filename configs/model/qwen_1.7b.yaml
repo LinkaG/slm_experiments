@@ -1,0 +1,11 @@
+name: qwen_1.7b
+model_type: qwen
+model_size: 1.7B
+model_path: unsloth/Qwen3-1.7B
+max_length: 512
+temperature: 0.2  # Низкая температура для фактологических ответов
+top_p: 0.95
+repetition_penalty: 1.1
+max_new_tokens: 50  # Короткие конкретные ответы
+device: cuda
+use_flash_attention: false  # flash_attn not installed

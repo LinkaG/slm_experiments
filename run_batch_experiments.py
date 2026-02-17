@@ -812,7 +812,10 @@ class BatchExperimentRunner:
 def main():
     """Главная функция."""
     import argparse
-    
+    from dotenv import load_dotenv
+
+    load_dotenv()  # Загружаем .env (DOCKER_MODELS_CACHE и др.)
+
     parser = argparse.ArgumentParser(description='Запуск пакетных экспериментов')
     parser.add_argument('--models', nargs='+', default=None,
                         help='Список моделей (по умолчанию все из configs/model/)')

@@ -1,0 +1,9 @@
+name: smollm2_360m
+model_type: smollm2
+model_size: 360M
+model_path: HuggingFaceTB/SmolLM-360M
+max_length: 512
+temperature: 0.7
+top_p: 0.9
+device: cuda
+use_flash_attention: false  # flash_attn not installed

@@ -9,6 +9,19 @@ import time
 
 from .base import BaseModel
 
+# Monkey-patch для совместимости MiniCPM4 с новыми версиями transformers
+# Модель MiniCPM4 импортирует is_torch_fx_available, удалённый в transformers 5.x
+def _patch_transformers_for_minicpm():
+    """Добавить is_torch_fx_available в import_utils если отсутствует."""
+    from transformers.utils import import_utils
+    if not hasattr(import_utils, 'is_torch_fx_available'):
+        def is_torch_fx_available():
+            # Возвращаем False — блок torch.fx.wrap не нужен для инференса,
+            # это избегает зависимости от is_torch_greater_or_equal_than_1_13
+            return False
+        import_utils.is_torch_fx_available = is_torch_fx_available
+_patch_transformers_for_minicpm()
+
 # Try to import huggingface_hub for download progress tracking
 try:
     from huggingface_hub import hf_hub_download
@@ -173,9 +186,14 @@ class HuggingFaceModel(BaseModel):
             os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '0'
             
             # Определяем путь к кэшу модели для отслеживания прогресса
+            # HuggingFace хранит модели в hub/models--org--name (новый формат)
+            # или в models--org--name в корне (старый формат)
             from pathlib import Path
             model_cache_name = self.model_path.replace('/', '--')
-            model_cache_path = Path(cache_dir) / 'models' / f'models--{model_cache_name}'
+            model_cache_dir = f'models--{model_cache_name}'
+            model_cache_path = Path(cache_dir) / 'hub' / model_cache_dir
+            if not model_cache_path.exists():
+                model_cache_path = Path(cache_dir) / model_cache_dir
             
             # Проверяем, есть ли модель в кэше
             if model_cache_path.exists():
@@ -193,7 +211,10 @@ class HuggingFaceModel(BaseModel):
                 **model_kwargs
             )
             
-            # После загрузки проверяем размер файлов
+            # После загрузки проверяем размер файлов (модель могла попасть в hub/ при скачивании)
+            model_cache_path = Path(cache_dir) / 'hub' / model_cache_dir
+            if not model_cache_path.exists():
+                model_cache_path = Path(cache_dir) / model_cache_dir
             if model_cache_path.exists():
                 total_size = sum(f.stat().st_size for f in model_cache_path.rglob('*') if f.is_file())
                 total_size_gb = total_size / (1024 ** 3)
