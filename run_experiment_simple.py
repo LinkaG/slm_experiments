@@ -140,7 +140,9 @@ def run_experiment_with_config(use_clearml=None, env_file='.env', hydra_override
             max_samples=config.experiment_mode.get('max_samples'),
             use_retriever=config.experiment_mode.get('use_retriever', False),
             context_type=config.experiment_mode.get('context_type', 'none'),
-            prompt_template=config.experiment_mode.get('prompt_template', 'Question: {question}\nAnswer:')
+            prompt_template=config.experiment_mode.get('prompt_template', 'Question: {question}\nAnswer:'),
+            system_prompt=config.experiment_mode.get('system_prompt'),
+            clearml_project=config.experiment.get('clearml_project', 'slm-experiments')
         )
 
         runner = ExperimentRunner(experiment_config)

@@ -202,6 +202,7 @@ data/**/*.jsonl
 # Logs and outputs
 logs/
 outputs/
+output_2/
 results/
 experiments/
 runs/

@@ -288,7 +288,7 @@ class HuggingFaceModel(BaseModel):
         
         return torch.float16
     
-    def generate(self, prompt: str, context: Optional[List[str]] = None, prompt_template: Optional[str] = None) -> str:
+    def generate(self, prompt: str, context: Optional[List[str]] = None, prompt_template: Optional[str] = None, system_prompt: Optional[str] = None) -> str:
         """Generate answer for the given prompt.
         
         Args:
@@ -306,7 +306,10 @@ class HuggingFaceModel(BaseModel):
         if use_chat_template:
             # Use chat template for Qwen3 models with thinking disabled
             messages = []
-            if context and len(context) > 0:
+            # System message: use system_prompt if provided, else "Context: ..." when context exists
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            elif context and len(context) > 0:
                 context_str = "\n".join(context)
                 messages.append({"role": "system", "content": f"Context: {context_str}"})
             
@@ -351,6 +354,9 @@ class HuggingFaceModel(BaseModel):
                     full_prompt = f"Context: {context_str}\n\nQuestion: {prompt}\nAnswer:"
                 else:
                     full_prompt = f"Question: {prompt}\nAnswer:"
+            # Prepend system prompt for non-chat models when provided
+            if system_prompt:
+                full_prompt = system_prompt + "\n\n" + full_prompt
         
         # Store last prompt for logging
         self.last_prompt = full_prompt
@@ -409,33 +415,27 @@ class HuggingFaceModel(BaseModel):
                         # Передаем ошибку дальше, если это не проблема autocast
                         raise
             
-            # Decode output
+            # Decode output - extract only newly generated tokens (most reliable)
+            input_length = inputs['input_ids'].shape[1]
+            output_ids = outputs[0][input_length:]
             generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            answer = self.tokenizer.decode(output_ids, skip_special_tokens=True).strip()
             
-            # Extract only the answer part
-            if use_chat_template:
-                # For chat template format, extract assistant response
-                # Qwen3 chat template typically has assistant role markers
-                if "<|im_start|>assistant" in generated_text:
-                    answer = generated_text.split("<|im_start|>assistant")[-1].strip()
-                    # Remove any remaining role markers
-                    answer = re.sub(r'<\|im_end\|>.*$', '', answer, flags=re.DOTALL).strip()
-                elif "assistant" in generated_text.lower():
-                    # Fallback: try to find assistant response
-                    parts = re.split(r'assistant\s*:?\s*', generated_text, flags=re.IGNORECASE)
-                    if len(parts) > 1:
-                        answer = parts[-1].strip()
+            # Fallback: if token-based extraction gives nothing, try text-based parsing
+            if not answer:
+                if use_chat_template:
+                    if "<|im_start|>assistant" in generated_text:
+                        answer = generated_text.split("<|im_start|>assistant")[-1].strip()
+                        answer = re.sub(r'<\|im_end\|>.*$', '', answer, flags=re.DOTALL).strip()
+                    elif "assistant" in generated_text.lower():
+                        parts = re.split(r'assistant\s*:?\s*', generated_text, flags=re.IGNORECASE)
+                        if len(parts) > 1:
+                            answer = parts[-1].strip()
+                else:
+                    if "Answer:" in generated_text:
+                        answer = generated_text.split("Answer:")[-1].strip()
                     else:
                         answer = generated_text[len(full_prompt):].strip()
-                else:
-                    # If no assistant marker found, extract text after prompt
-                    answer = generated_text[len(full_prompt):].strip()
-            else:
-                # Original extraction logic for non-chat-template format
-                if "Answer:" in generated_text:
-                    answer = generated_text.split("Answer:")[-1].strip()
-                else:
-                    answer = generated_text[len(full_prompt):].strip()
             
             # Clean up the answer - убираем лишние пробелы и переносы строк
             # НЕ обрезаем по первой строке, так как ответ может быть многострочным

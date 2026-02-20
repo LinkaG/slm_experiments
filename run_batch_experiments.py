@@ -17,6 +17,9 @@
     # Без ClearML логирования
     poetry run python run_batch_experiments.py --no-clearml
     
+    # Oracle эксперименты в отдельный проект ClearML и папку output_2
+    poetry run python run_batch_experiments.py --experiment-mode oracle_context --clearml-project oracle --output-dir output_2
+    
     # Или если активировано окружение Poetry (poetry shell):
     python run_batch_experiments.py
 
@@ -247,11 +250,15 @@ class BatchExperimentRunner:
         experiment_mode: str = "no_context",
         max_parallel: Optional[int] = None,
         retry_count: int = 3,
-        use_clearml: bool = True
+        use_clearml: bool = True,
+        clearml_project: Optional[str] = None,
+        output_dir: Optional[str] = None
     ):
         self.models = models
         self.datasets = datasets
         self.experiment_mode = experiment_mode
+        self.clearml_project = clearml_project
+        self.output_dir = output_dir
         self.max_retries = retry_count
         self.use_clearml = use_clearml
         
@@ -307,20 +314,25 @@ class BatchExperimentRunner:
             load_dotenv()
             
             self.clearml_task = Task.create(
-                project_name="slm-experiments",
+                project_name=self.clearml_project or "slm-experiments",
                 task_name=f"batch_experiments_{self.experiment_mode}",
                 task_type=Task.TaskTypes.custom
             )
             
             # Логируем конфигурацию пакетного запуска
-            self.clearml_task.connect({
+            connect_config = {
                 "models": self.models,
                 "datasets": self.datasets,
                 "experiment_mode": self.experiment_mode,
                 "max_parallel": self.max_parallel,
                 "gpu_count": self.gpu_count,
                 "retry_count": self.max_retries
-            })
+            }
+            if self.clearml_project:
+                connect_config["clearml_project"] = self.clearml_project
+            if self.output_dir:
+                connect_config["output_dir"] = self.output_dir
+            self.clearml_task.connect(connect_config)
             
             self.clearml_logger = Logger.current_logger()
             logger.info("✅ ClearML задача создана для логирования прогресса")
@@ -434,6 +446,20 @@ class BatchExperimentRunner:
             logger.error(f"❌ Docker сеть {network_name} не найдена!")
             return False
         
+        # Формируем Hydra overrides для команды
+        hydra_overrides = [
+            f"model={task.model}",
+            f"dataset={task.dataset}",
+            f"experiment_mode={task.experiment_mode}"
+        ]
+        if self.output_dir:
+            # Оборачиваем в кавычки, чтобы bash не раскрывал ${experiment.name}
+            hydra_overrides.append(f"experiment.output_dir='{self.output_dir}/${{experiment.name}}'")
+        if self.clearml_project:
+            hydra_overrides.append(f"experiment.clearml_project={self.clearml_project}")
+
+        run_cmd = "python run_experiment_simple.py " + " ".join(hydra_overrides)
+
         # Формируем команду для запуска эксперимента через Docker
         # Используем --gpus device=N для выбора конкретной GPU
         # Все настройки из run_experiment_fast.sh, но с выбором конкретной GPU
@@ -457,7 +483,7 @@ class BatchExperimentRunner:
             "-e", "CLEARML_S3_REGION=us-east-1",
             image_name,
             "bash", "-c",
-            f"python run_experiment_simple.py model={task.model} dataset={task.dataset} experiment_mode={task.experiment_mode}"
+            run_cmd
         ]
         
         logger.info(f"🚀 Запуск в Docker: {task.model} × {task.dataset} на GPU {gpu_id}")
@@ -823,6 +849,10 @@ def main():
                         help='Список датасетов (по умолчанию local_nq, local_simple_qa)')
     parser.add_argument('--experiment-mode', default='no_context',
                         help='Режим эксперимента (по умолчанию: no_context)')
+    parser.add_argument('--clearml-project', default=None,
+                        help='Проект в ClearML для логирования (по умолчанию: slm-experiments)')
+    parser.add_argument('--output-dir', default=None,
+                        help='Базовая папка для сохранения результатов (по умолчанию: outputs)')
     parser.add_argument('--max-parallel', type=int, default=None,
                         help='Максимальное количество параллельных экспериментов')
     parser.add_argument('--retry-count', type=int, default=3,
@@ -863,7 +893,9 @@ def main():
         experiment_mode=args.experiment_mode,
         max_parallel=args.max_parallel,
         retry_count=args.retry_count,
-        use_clearml=not args.no_clearml
+        use_clearml=not args.no_clearml,
+        clearml_project=args.clearml_project,
+        output_dir=args.output_dir
     )
     
     runner.run()

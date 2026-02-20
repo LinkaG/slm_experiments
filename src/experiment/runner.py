@@ -43,7 +43,9 @@ class ExperimentConfig:
     use_retriever: bool = False
     context_type: str = "none"
     prompt_template: str = "Question: {question}\nAnswer:"  # default prompt
+    system_prompt: Optional[str] = None  # optional system message for chat models
     model: Optional[Any] = None
+    clearml_project: str = "slm-experiments"
 
 class ExperimentRunner:
     """Main class for running experiments."""
@@ -66,7 +68,7 @@ class ExperimentRunner:
             
             # Создаем ClearML задачу
             self.task = create_clearml_task(
-                project_name="slm-experiments",
+                project_name=self.config.clearml_project,
                 task_name=self.config.name,
                 tags=[self.config.model_config.get('name', 'unknown'), 
                       self.config.dataset_config.get('name', 'unknown'),
@@ -406,11 +408,14 @@ class ExperimentRunner:
             self.memory_tracker.log_memory("model", "before_generate")
             
             # Generate answer
-            predicted_answer = model.generate(
+            generate_kwargs = dict(
                 prompt=item.question,
                 context=contexts,
                 prompt_template=self.config.prompt_template
             )
+            if self.config.system_prompt is not None:
+                generate_kwargs['system_prompt'] = self.config.system_prompt
+            predicted_answer = model.generate(**generate_kwargs)
             
             # Log prompt examples for first few items
             if logged_prompt_examples < max_prompt_examples and hasattr(model, 'last_prompt'):

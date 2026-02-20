@@ -7,7 +7,9 @@ context_type: oracle
 max_context_length: 512  # максимальная длина контекста
 
 # Prompt template
-prompt_template: "Context: {context}\n\nQuestion: {question}\nAnswer:"
+# system: instruction for the assistant; user: Background (docs) + Question
+system_prompt: "You are a helpful assistant. Your task is to extract relevant information from provided documents and to answer to questions as briefly as possible."
+prompt_template: "Background:\n{context}\n\nQuestion:\n{question}"
 
 # Experiment settings
 max_samples: null  # use all samples
