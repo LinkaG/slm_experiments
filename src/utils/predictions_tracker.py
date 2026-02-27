@@ -125,13 +125,40 @@ class PredictionsTracker:
             if stats["count"] > 0:
                 stats["avg_recall"] = stats["total_recall"] / stats["count"]
                 stats["ground_truth_ratio"] = stats["has_ground_truth"] / stats["count"]
-                
-        return {
+        
+        # oracle_long: статистика по мультифрагментным примерам
+        oracle_long_stats = self._calculate_oracle_long_fragment_stats()
+        result = {
             "total_predictions": len(self.predictions),
             "metrics_by_context": metrics_by_context,
             "unique_models": self._get_unique_model_names()
         }
+        if oracle_long_stats:
+            result["oracle_long_fragment_stats"] = oracle_long_stats
+        return result
     
+    def _calculate_oracle_long_fragment_stats(self) -> Optional[Dict]:
+        """Статистика по oracle_long с несколькими фрагментами."""
+        multi_frag = [p for p in self.predictions 
+                      if p.metadata.get("oracle_long_fragment_count", 0) > 1]
+        if not multi_frag:
+            return None
+        fragment_counts = [p.metadata["oracle_long_fragment_count"] for p in multi_frag]
+        unique_run = [p.metadata.get("oracle_long_unique_fragments_run", fc) for p, fc in zip(multi_frag, fragment_counts)]
+        inferences_saved = sum(fc - ur for fc, ur in zip(fragment_counts, unique_run))
+        items_deduped = sum(1 for fc, ur in zip(fragment_counts, unique_run) if fc > ur)
+        return {
+            "items_with_multiple_fragments": len(multi_frag),
+            "avg_fragments_per_item": sum(fragment_counts) / len(fragment_counts),
+            "max_fragments": max(fragment_counts),
+            "inferences_saved_by_dedup": inferences_saved,
+            "items_with_duplicate_fragments": items_deduped,
+        }
+    
+    def get_statistics(self) -> Dict:
+        """Return full statistics (for logging to ClearML etc)."""
+        return self._calculate_statistics()
+
     def _get_unique_context_types(self) -> List[str]:
         """Get list of unique context types."""
         return list(set(p.context_type for p in self.predictions))

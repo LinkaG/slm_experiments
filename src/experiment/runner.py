@@ -320,6 +320,17 @@ class ExperimentRunner:
         self.logger.report_text(f"📦 Размер модели: {metrics.get('model_size_mb', 0):.2f} MB")
         self.logger.report_text(f"🔍 Размер индекса RAG: {metrics.get('retriever_index_size_mb', 0):.2f} MB")
         
+        # oracle_long: статистика по мультифрагментным примерам
+        stats = self.predictions_tracker.get_statistics()
+        if stats.get("oracle_long_fragment_stats"):
+            frag_stats = stats["oracle_long_fragment_stats"]
+            self.logger.report_text("📋 oracle_long (мультифрагменты):")
+            self.logger.report_text(f"  Примеров с несколькими фрагментами: {frag_stats['items_with_multiple_fragments']}")
+            self.logger.report_text(f"  Среднее фрагментов на пример: {frag_stats['avg_fragments_per_item']:.2f}")
+            self.logger.report_text(f"  Макс. фрагментов: {frag_stats['max_fragments']}")
+            if frag_stats.get("inferences_saved_by_dedup", 0) > 0:
+                self.logger.report_text(f"  Дедупликация: сэкономлено {frag_stats['inferences_saved_by_dedup']} инференсов ({frag_stats['items_with_duplicate_fragments']} примеров с дубликатами)")
+        
         # Сохраняем все данные локального логгера (если используется)
         if not self.use_clearml and hasattr(self, 'local_logger'):
             self.local_logger.save_all(self.config.name)
@@ -344,6 +355,13 @@ class ExperimentRunner:
                 return []
             elif self.config.context_type == "oracle":
                 return [item.context] if item.context else []
+            elif self.config.context_type == "oracle_long":
+                # long_context: list (NQ, MIRAGE) or long_answer: str (MIRAGE)
+                metadata = item.metadata or {}
+                long_context = metadata.get("long_context", [])
+                if not long_context and metadata.get("long_answer"):
+                    long_context = [metadata["long_answer"]]
+                return [c for c in long_context if c] if isinstance(long_context, list) else []
         else:
             if not retriever:
                 raise ValueError("Retriever is required for retriever_context mode")
@@ -401,40 +419,100 @@ class ExperimentRunner:
             # Get context based on experiment mode
             contexts = self._get_context(item, retriever)
             
+            # Skip items without long_context in oracle_long mode (e.g. simple_qa has no long_answer yet)
+            if self.config.context_type == "oracle_long" and not contexts:
+                continue
+            
             if retriever:
                 self.memory_tracker.log_memory("retriever", "after_retrieve")
             
-            # Track memory for model inference
-            self.memory_tracker.log_memory("model", "before_generate")
-            
-            # Generate answer
-            generate_kwargs = dict(
-                prompt=item.question,
-                context=contexts,
-                prompt_template=self.config.prompt_template
+            # oracle_long с несколькими фрагментами: прогоняем каждый уникальный, берём лучший recall
+            use_multi_fragment = (
+                self.config.context_type == "oracle_long" and len(contexts) > 1
             )
-            if self.config.system_prompt is not None:
-                generate_kwargs['system_prompt'] = self.config.system_prompt
-            predicted_answer = model.generate(**generate_kwargs)
+            
+            if use_multi_fragment:
+                # Дедупликация: аннотаторы иногда выделяют одни и те же фрагменты
+                seen = set()
+                fragments_to_run = []
+                for frag in contexts:
+                    key = (frag or "").strip()
+                    if not key:
+                        continue
+                    if key not in seen:
+                        seen.add(key)
+                        fragments_to_run.append(frag)
+                if not fragments_to_run:
+                    fragments_to_run = [c for c in contexts if (c or "").strip()][:1] or contexts[:1]
+                
+                self.memory_tracker.log_memory("model", "before_generate")
+                per_fragment_recalls = []
+                best_recall = 0.0
+                best_predicted_answer = None
+                best_context = None
+                best_prompt = None
+                best_fragment_idx = 0
+                
+                for frag_idx, fragment in enumerate(fragments_to_run):
+                    generate_kwargs = dict(
+                        prompt=item.question,
+                        context=[fragment],
+                        prompt_template=self.config.prompt_template
+                    )
+                    if self.config.system_prompt is not None:
+                        generate_kwargs['system_prompt'] = self.config.system_prompt
+                    pred = model.generate(**generate_kwargs)
+                    frag_recall = self.metric_calculator.calculate_recall(
+                        predicted=pred, ground_truth=item.answer
+                    )
+                    per_fragment_recalls.append(frag_recall)
+                    if frag_recall > best_recall:
+                        best_recall = frag_recall
+                        best_predicted_answer = pred
+                        best_context = fragment
+                        best_prompt = model.last_prompt if hasattr(model, 'last_prompt') else None
+                        best_fragment_idx = frag_idx
+                
+                self.memory_tracker.log_memory("model", "after_generate")
+                recall = best_recall
+                predicted_answer = best_predicted_answer
+                prediction_contexts = [best_context]
+                prediction_prompt = best_prompt
+                prediction_metadata_extra = {
+                    'oracle_long_fragment_count': len(contexts),
+                    'oracle_long_unique_fragments_run': len(fragments_to_run),
+                    'oracle_long_best_fragment_idx': best_fragment_idx,
+                    'oracle_long_per_fragment_recalls': per_fragment_recalls,
+                }
+            else:
+                self.memory_tracker.log_memory("model", "before_generate")
+                generate_kwargs = dict(
+                    prompt=item.question,
+                    context=contexts,
+                    prompt_template=self.config.prompt_template
+                )
+                if self.config.system_prompt is not None:
+                    generate_kwargs['system_prompt'] = self.config.system_prompt
+                predicted_answer = model.generate(**generate_kwargs)
+                self.memory_tracker.log_memory("model", "after_generate")
+                recall = self.metric_calculator.calculate_recall(
+                    predicted=predicted_answer, ground_truth=item.answer
+                )
+                prediction_contexts = contexts
+                prediction_prompt = model.last_prompt if hasattr(model, 'last_prompt') else None
+                prediction_metadata_extra = {}
             
             # Log prompt examples for first few items
-            if logged_prompt_examples < max_prompt_examples and hasattr(model, 'last_prompt'):
+            if logged_prompt_examples < max_prompt_examples and prediction_prompt:
                 if hasattr(self.logger, 'report_text'):
                     self.logger.report_text(f"\n💬 Пример промпта #{logged_prompt_examples + 1}:")
                     self.logger.report_text("```")
-                    self.logger.report_text(model.last_prompt)
+                    self.logger.report_text(prediction_prompt)
                     self.logger.report_text("```")
                     self.logger.report_text(f"Сгенерированный ответ: {predicted_answer}")
                     self.logger.report_text(f"Правильный ответ: {item.answer}")
                 logged_prompt_examples += 1
             
-            self.memory_tracker.log_memory("model", "after_generate")
-            
-            # Calculate token recall
-            recall = self.metric_calculator.calculate_recall(
-                predicted=predicted_answer,
-                ground_truth=item.answer
-            )
             recalls.append(recall)
             
             # Track prediction
@@ -443,15 +521,16 @@ class ExperimentRunner:
                 question=item.question,
                 predicted_answer=predicted_answer,
                 ground_truth=item.answer,
-                contexts=contexts,
+                contexts=prediction_contexts,
                 context_type=self.config.context_type,
                 model_name=self.config.model_config.get('name', 'unknown'),
                 token_recall=recall,
                 metadata={
                     'dataset': self.config.dataset_config.get('name', 'unknown'),
-                    **item.metadata
+                    **item.metadata,
+                    **prediction_metadata_extra
                 },
-                prompt=model.last_prompt if hasattr(model, 'last_prompt') else None
+                prompt=prediction_prompt
             )
             
             # Log individual example progress (создает график прогресса)

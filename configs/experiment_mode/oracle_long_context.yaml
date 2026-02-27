@@ -1,0 +1,17 @@
+name: oracle_long_context
+description: "Evaluate model with perfect long context retrieval (using ground truth long_answer / long_context from document)"
+
+# Retriever settings
+use_retriever: false
+context_type: oracle_long
+max_context_length: 2048  # длинный абзац из документа
+
+# Prompt template
+# system: instruction for the assistant; user: Background (docs) + Question
+system_prompt: "You are a helpful assistant. Your task is to extract relevant information from provided documents and to answer to questions as briefly as possible."
+prompt_template: "Background:\n{context}\n\nQuestion:\n{question}"
+
+# Experiment settings
+max_samples: null  # use all samples
+metrics:
+  - token_recall

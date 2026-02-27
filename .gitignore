@@ -248,3 +248,7 @@ Thumbs.db
 # Логи фоновых экспериментов
 logs/
 .config/
+
+outputs/
+output_2/
+output_3/

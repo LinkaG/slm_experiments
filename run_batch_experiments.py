@@ -20,6 +20,9 @@
     # Oracle эксперименты в отдельный проект ClearML и папку output_2
     poetry run python run_batch_experiments.py --experiment-mode oracle_context --clearml-project oracle --output-dir output_2
     
+    # Oracle long context (только NQ и MIRAGE, simple_qa исключён - нет long_answer)
+    poetry run python run_batch_experiments.py --experiment-mode oracle_long_context --clearml-project oracle --output-dir output_2
+    
     # Или если активировано окружение Poetry (poetry shell):
     python run_batch_experiments.py
 
@@ -881,6 +884,13 @@ def main():
     else:
         datasets = args.datasets
         logger.info(f"📊 Использованы указанные датасеты: {datasets}")
+    
+    # oracle_long_context: simple_qa не имеет long_answer, исключаем из экспериментов
+    if args.experiment_mode == "oracle_long_context":
+        datasets_with_long = [d for d in datasets if "simple_qa" not in d.lower()]
+        if datasets_with_long != datasets:
+            logger.info(f"📊 oracle_long_context: исключён simple_qa (нет long_answer), датасеты: {datasets_with_long}")
+            datasets = datasets_with_long
     
     # Показываем общее количество экспериментов
     total_experiments = len(models) * len(datasets)
