@@ -21,12 +21,13 @@
     poetry run python run_batch_experiments.py --experiment-mode oracle_context --clearml-project oracle --output-dir output_2
     
     # Oracle long context (только NQ и MIRAGE, simple_qa исключён - нет long_answer)
-    poetry run python run_batch_experiments.py --experiment-mode oracle_long_context --clearml-project oracle --output-dir output_2
+    poetry run python run_batch_experiments.py --experiment-mode oracle_long_context --clearml-project oracle --output-dir output_3
     
     # Или если активировано окружение Poetry (poetry shell):
     python run_batch_experiments.py
 
 Особенности:
+    - MinIO bucket = имя конфига experiment_mode (no_context, oracle_context, oracle_long_context)
     - Автоматическое определение доступных GPU
     - Мониторинг памяти GPU через nvidia-smi
     - Максимальный параллелизм с учетом доступной памяти
@@ -343,6 +344,13 @@ class BatchExperimentRunner:
             logger.warning(f"⚠️  Не удалось настроить ClearML: {e}")
             self.use_clearml = False
     
+    def _get_s3_bucket_for_experiment_mode(self) -> str:
+        """Возвращает bucket MinIO = имя конфига experiment_mode.
+        
+        Подчёркивания заменяются на дефисы (S3/MinIO не допускают _ в именах bucket).
+        """
+        return self.experiment_mode.replace("_", "-")
+    
     def _load_model_memory_estimates(self) -> Dict[str, float]:
         """Загрузить оценки памяти для моделей из конфигов."""
         estimates = {}
@@ -449,6 +457,10 @@ class BatchExperimentRunner:
             logger.error(f"❌ Docker сеть {network_name} не найдена!")
             return False
         
+        # Bucket MinIO = имя конфига experiment_mode
+        s3_bucket = self._get_s3_bucket_for_experiment_mode()
+        logger.info(f"📦 MinIO bucket: {s3_bucket} (совпадает с experiment_mode)")
+        
         # Формируем Hydra overrides для команды
         hydra_overrides = [
             f"model={task.model}",
@@ -480,7 +492,7 @@ class BatchExperimentRunner:
             "-e", "TRANSFORMERS_CACHE=/root/.cache/huggingface",
             "-e", "HF_HOME=/root/.cache/huggingface",
             "-e", "CLEARML_S3_ENDPOINT=http://minio:9000",
-            "-e", "CLEARML_S3_BUCKET=clearml-artifacts",
+            "-e", f"CLEARML_S3_BUCKET={s3_bucket}",
             "-e", "CLEARML_S3_ACCESS_KEY=minioadmin",
             "-e", "CLEARML_S3_SECRET_KEY=minioadmin",
             "-e", "CLEARML_S3_REGION=us-east-1",

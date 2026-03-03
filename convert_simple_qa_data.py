@@ -20,6 +20,20 @@ def parse_metadata(metadata_str: str) -> Dict[str, Any]:
         print(f"Warning: Could not parse metadata '{metadata_str[:50]}...': {e}")
         return {}
 
+
+def parse_long_answer(long_answer_str: str) -> List[str]:
+    """Парсит строку long_answer в список фрагментов документов."""
+    if not long_answer_str or not long_answer_str.strip():
+        return []
+    try:
+        result = ast.literal_eval(long_answer_str)
+        if isinstance(result, list):
+            return [str(x).strip() for x in result if str(x).strip()]
+        return []
+    except (ValueError, SyntaxError) as e:
+        print(f"Warning: Could not parse long_answer '{long_answer_str[:50]}...': {e}")
+        return []
+
 def convert_simple_qa_to_rag_format(
     input_csv: str, 
     output_json: str, 
@@ -43,6 +57,7 @@ def convert_simple_qa_to_rag_format(
     
     with open(input_csv, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
         
         for i, row in enumerate(reader):
             if max_items and i >= max_items:
@@ -51,11 +66,15 @@ def convert_simple_qa_to_rag_format(
             # Парсим метаданные
             metadata = parse_metadata(row['metadata'])
             
+            # Парсим long_answer (если колонка есть)
+            long_context = parse_long_answer(row['long_answer']) if 'long_answer' in fieldnames else []
+            
             # Создаем элемент в формате RAG фреймворка
             item = {
                 'question': row['problem'],
                 'answer': row['answer'],
                 'context': row['documents'],  # Документы как контекст
+                'long_context': long_context,
                 'metadata': {
                     'id': i,
                     'topic': metadata.get('topic', ''),
@@ -91,12 +110,13 @@ def convert_simple_qa_to_rag_format(
         print(f"{i+1}. {item['question']}")
         print(f"   Ответ: {item['answer']}")
         print(f"   Тема: {item['metadata']['topic']}")
+        print(f"   Long contexts: {len(item['long_context'])}")
         print()
 
 def main():
     parser = argparse.ArgumentParser(description='Конвертер SimpleQA для RAG фреймворка')
     parser.add_argument('--input', '-i', 
-                       default='data/simple_qa/simple_qa_test_set_with_documents.csv',
+                       default='data/simple_qa/simple_qa_test_set_with_long_answer.csv',
                        help='Путь к входному CSV файлу')
     parser.add_argument('--output', '-o',
                        default='data/simple_qa/simple_qa_converted.json',
