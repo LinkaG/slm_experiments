@@ -16,7 +16,7 @@ except ImportError:
 from ..models.base import BaseModel
 from ..retrievers.base import BaseRetriever
 from ..data.base import BaseDataset, DatasetItem
-from .metrics import TokenRecallCalculator
+from .metrics import TokenRecallCalculator, get_ground_truth_for_recall
 from ..utils.memory_tracker import MemoryTracker
 from ..utils.predictions_tracker import PredictionsTracker
 from ..utils.logger_wrapper import LoggerWrapper
@@ -315,7 +315,8 @@ class ExperimentRunner:
         
         # Логируем завершение эксперимента
         self.logger.report_text("✅ Эксперимент успешно завершен!")
-        self.logger.report_text(f"📈 Токен-реколл: {metrics.get('token_recall', 0):.4f}")
+        self.logger.report_text(f"📈 Substring recall: {metrics.get('substring_recall', 0):.4f}")
+        self.logger.report_text(f"📈 Token recall: {metrics.get('token_recall', 0):.4f}")
         self.logger.report_text(f"📊 Количество примеров: {metrics.get('num_examples', 0)}")
         self.logger.report_text(f"📦 Размер модели: {metrics.get('model_size_mb', 0):.2f} MB")
         self.logger.report_text(f"🔍 Размер индекса RAG: {metrics.get('retriever_index_size_mb', 0):.2f} MB")
@@ -375,6 +376,7 @@ class ExperimentRunner:
                  dataset: BaseDataset) -> Dict[str, float]:
         """Evaluate model performance using token recall metric."""
         recalls = []
+        token_recalls = []
         processed = 0
         logged_prompt_examples = 0  # Track how many prompt examples we've logged
         max_prompt_examples = 20  # Log first 20 prompt examples
@@ -426,6 +428,8 @@ class ExperimentRunner:
             if retriever:
                 self.memory_tracker.log_memory("retriever", "after_retrieve")
             
+            ground_truth_for_recall = get_ground_truth_for_recall(item.metadata, item.answer)
+            
             # oracle_long с несколькими фрагментами: прогоняем каждый уникальный, берём лучший recall
             use_multi_fragment = (
                 self.config.context_type == "oracle_long" and len(contexts) > 1
@@ -463,7 +467,7 @@ class ExperimentRunner:
                         generate_kwargs['system_prompt'] = self.config.system_prompt
                     pred = model.generate(**generate_kwargs)
                     frag_recall = self.metric_calculator.calculate_recall(
-                        predicted=pred, ground_truth=item.answer
+                        predicted=pred, ground_truth=ground_truth_for_recall
                     )
                     per_fragment_recalls.append(frag_recall)
                     if frag_recall > best_recall:
@@ -496,7 +500,7 @@ class ExperimentRunner:
                 predicted_answer = model.generate(**generate_kwargs)
                 self.memory_tracker.log_memory("model", "after_generate")
                 recall = self.metric_calculator.calculate_recall(
-                    predicted=predicted_answer, ground_truth=item.answer
+                    predicted=predicted_answer, ground_truth=ground_truth_for_recall
                 )
                 prediction_contexts = contexts
                 prediction_prompt = model.last_prompt if hasattr(model, 'last_prompt') else None
@@ -513,7 +517,13 @@ class ExperimentRunner:
                     self.logger.report_text(f"Правильный ответ: {item.answer}")
                 logged_prompt_examples += 1
             
-            recalls.append(recall)
+            # Recall по подстрокам (текущий) и по токенам (оригинальный)
+            recall_substring = recall
+            recall_token = self.metric_calculator.calculate_token_recall(
+                predicted_answer, ground_truth_for_recall
+            )
+            recalls.append(recall_substring)
+            token_recalls.append(recall_token)
             
             # Track prediction
             self.predictions_tracker.add_prediction(
@@ -524,9 +534,10 @@ class ExperimentRunner:
                 contexts=prediction_contexts,
                 context_type=self.config.context_type,
                 model_name=self.config.model_config.get('name', 'unknown'),
-                token_recall=recall,
+                token_recall=recall_substring,
                 metadata={
                     'dataset': self.config.dataset_config.get('name', 'unknown'),
+                    'token_recall_tokens': recall_token,
                     **item.metadata,
                     **prediction_metadata_extra
                 },
@@ -537,8 +548,14 @@ class ExperimentRunner:
             if hasattr(self.logger, 'report_scalar'):
                 self.logger.report_scalar(
                     title="Training Progress",
+                    series="substring_recall",
+                    value=recall_substring,
+                    iteration=processed
+                )
+                self.logger.report_scalar(
+                    title="Training Progress",
                     series="token_recall",
-                    value=recall,
+                    value=recall_token,
                     iteration=processed
                 )
             
@@ -584,10 +601,12 @@ class ExperimentRunner:
             pbar.close()
         
         # Calculate average recall
-        avg_recall = mean(recalls) if recalls else 0.0
+        avg_substring_recall = mean(recalls) if recalls else 0.0
+        avg_token_recall = mean(token_recalls) if token_recalls else 0.0
         
         return {
-            "token_recall": avg_recall,
+            "substring_recall": avg_substring_recall,
+            "token_recall": avg_token_recall,
             "num_examples": len(recalls)
         }
     

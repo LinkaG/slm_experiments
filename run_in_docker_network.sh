@@ -84,9 +84,9 @@ docker run $DOCKER_ARGS \
     "$BASE_IMAGE" \
     bash -c "
         if [ \"$USE_GPU\" = false ]; then
-            pip install -q --no-cache-dir clearml boto3 python-dotenv requests omegaconf hydra-core torch transformers tqdm pandas
+            pip install -q --no-cache-dir clearml boto3 python-dotenv requests omegaconf hydra-core torch transformers tqdm pandas unidecode
         else
-            pip install -q --no-cache-dir clearml boto3 python-dotenv requests omegaconf hydra-core transformers tqdm pandas
+            pip install -q --no-cache-dir clearml boto3 python-dotenv requests omegaconf hydra-core transformers tqdm pandas unidecode
         fi
         echo '✅ Конфигурация ClearML смонтирована в ~/.clearml.conf'
         echo '✅ Переменные окружения для MinIO установлены'

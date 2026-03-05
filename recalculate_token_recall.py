@@ -11,6 +11,7 @@
     ./run_recalculate_token_recall.sh --dry-run  # без обновления файлов
     ./run_recalculate_token_recall.sh --no-clearml  # без обновления ClearML
     ./run_recalculate_token_recall.sh --experiment qwen_0.6b_local_nq_full_no_context
+    ./run_recalculate_token_recall.sh --outputs-dir output_3 --project oracle  # для oracle экспериментов
 
 2. Локально (если ClearML доступен напрямую):
     poetry run python recalculate_token_recall.py
@@ -28,7 +29,7 @@ from statistics import mean
 
 from clearml import Task, Logger
 
-from src.experiment.metrics import TokenRecallCalculator
+from src.experiment.metrics import TokenRecallCalculator, get_ground_truth_for_recall
 from src.utils.clearml_config import setup_clearml_environment
 
 # Настройка логирования
@@ -228,7 +229,8 @@ def recalculate_token_recall_for_experiment(
     experiment_dir: Path,
     dry_run: bool = False,
     update_clearml: bool = True,
-    task_id: Optional[str] = None
+    task_id: Optional[str] = None,
+    clearml_project: str = "slm-experiments"
 ) -> Dict:
     """
     Пересчитывает token_recall для одного эксперимента.
@@ -280,16 +282,17 @@ def recalculate_token_recall_for_experiment(
     
     for i, pred in enumerate(predictions):
         predicted_answer = pred.get('predicted_answer', '')
-        ground_truth = pred.get('ground_truth', [])
+        metadata = pred.get('metadata', {})
+        ground_truth_for_recall = get_ground_truth_for_recall(metadata, pred.get('ground_truth'))
         
-        if not predicted_answer or not ground_truth:
+        if not predicted_answer or not ground_truth_for_recall:
             continue
         
         old_recall = pred.get('token_recall', 0.0)
         old_recalls.append(old_recall)
         
         # Пересчитываем recall
-        new_recall = calculator.calculate_recall(predicted_answer, ground_truth)
+        new_recall = calculator.calculate_recall(predicted_answer, ground_truth_for_recall)
         new_recalls.append(new_recall)
         
         # Обновляем значение в словаре
@@ -355,6 +358,7 @@ def recalculate_token_recall_for_experiment(
             
             clearml_task = find_clearml_task(
                 task_name=experiment_name,
+                project_name=clearml_project,
                 task_id=task_id,
                 tags=tags if tags else None
             )
@@ -442,6 +446,12 @@ def main():
         default=None,
         help='ID задачи ClearML для обновления (если не указан, будет поиск по имени)'
     )
+    parser.add_argument(
+        '--project',
+        type=str,
+        default='slm-experiments',
+        help='Проект ClearML для поиска задач (по умолчанию: slm-experiments, для oracle: oracle)'
+    )
     
     args = parser.parse_args()
     
@@ -481,7 +491,8 @@ def main():
                 experiment_dir=experiment_dir,
                 dry_run=args.dry_run,
                 update_clearml=not args.no_clearml,
-                task_id=args.task_id
+                task_id=args.task_id,
+                clearml_project=args.project
             )
             results.append(result)
         except Exception as e:

@@ -97,8 +97,8 @@ class HuggingFaceModel(BaseModel):
         self.last_prompt = None  # Store last used prompt for logging
         self.model_path = config.get('model_path', 'gpt2')
         
-        # Extract config parameters
-        self.max_length = config.get('max_length', 512)
+        # Extract config parameters (max_length set after tokenizer load to use model's limit)
+        self._config_max_length = config.get('max_length')
         self.temperature = config.get('temperature', 0.7)
         self.top_p = config.get('top_p', 0.9)
         self.repetition_penalty = config.get('repetition_penalty', 1.1)  # Предотвращает зацикливание
@@ -158,6 +158,14 @@ class HuggingFaceModel(BaseModel):
             # Set padding token if not set
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+            # max_length: prefer model's context limit (tokenizer.model_max_length), fallback to config
+            # tokenizer.model_max_length can be int(1e30) when not defined — treat as "no limit"
+            model_max = getattr(self.tokenizer, 'model_max_length', None)
+            if model_max is None or model_max >= 1_000_000_000:
+                model_max = None
+            self.max_length = model_max or self._config_max_length or 512
+            self.logger.info(f"📏 max_length: {self.max_length} (model={model_max}, config={self._config_max_length})")
             
             # Determine dtype: use model's preferred format (bf16/fp16) if GPU supports it
             torch_dtype = self._get_torch_dtype()

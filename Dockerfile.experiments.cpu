@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir \
     pandas \
     "sentencepiece>=0.1.91" \
     psutil \
-    safetensors
+    safetensors \
+    unidecode
 
 # По умолчанию запускаем bash
 CMD ["bash"]

@@ -1,6 +1,17 @@
-from typing import List, Set, Optional
-from transformers import AutoTokenizer
+from typing import List, Set, Optional, Any, Union
 import re
+
+from unidecode import unidecode
+from transformers import AutoTokenizer
+
+
+def get_ground_truth_for_recall(metadata: Optional[dict], answer: Any) -> Union[str, List[str], None]:
+    """
+    Возвращает ground truth для расчёта recall.
+    MIRAGE: использует all_answers (лучший recall по токенам), иначе — одиночный ответ.
+    """
+    return (metadata or {}).get('all_answers') or answer
+
 
 class TokenRecallCalculator:
     """Calculator for token-based recall metric."""
@@ -48,6 +59,9 @@ class TokenRecallCalculator:
         if not text.strip():
             return set()
         
+        # Нормализация гомоглифов (кириллица → латиница) для корректного сравнения
+        text = unidecode(text)
+        
         # Extract words: sequences of letters, digits, and common word characters
         # This splits on whitespace and punctuation, keeping only words
         words = re.findall(r'\b\w+\b', text.lower())
@@ -55,28 +69,64 @@ class TokenRecallCalculator:
         # Filter out empty strings and return unique words
         return set(word for word in words if word)
     
-    def calculate_recall(self, predicted: str, ground_truth) -> float:
-        """Calculate token-based recall between predicted and ground truth texts."""
+    def _get_words(self, text) -> List[str]:
+        """Разбить текст на слова (с unidecode)."""
+        if isinstance(text, list):
+            text = " ".join(str(t) for t in text)
+        if not isinstance(text, str):
+            text = str(text)
+        if not text.strip():
+            return []
+        text = unidecode(text)
+        words = re.findall(r'\b\w+\b', text.lower())
+        return [w for w in words if w]
+    
+    def calculate_token_recall(self, predicted: str, ground_truth) -> float:
+        """
+        Recall по токенам (оригинальный): intersection / |ground_truth_tokens|.
+        Для all_answers — берём max.
+        """
         pred_tokens = self.get_tokens(predicted)
-        
-        # Handle multiple ground truth answers
         if isinstance(ground_truth, list):
             recalls = []
             for truth in ground_truth:
                 truth_tokens = self.get_tokens(truth)
-                if truth_tokens:  # Only consider non-empty answers
+                if truth_tokens:
                     intersection = truth_tokens.intersection(pred_tokens)
-                    recall = len(intersection) / len(truth_tokens)
-                    recalls.append(recall)
+                    recalls.append(len(intersection) / len(truth_tokens))
             return max(recalls) if recalls else 0.0
         else:
-            # Single ground truth answer
             truth_tokens = self.get_tokens(ground_truth)
             if not truth_tokens:
                 return 0.0
-                
-            # Calculate recall: |intersection| / |ground_truth|
             intersection = truth_tokens.intersection(pred_tokens)
-            recall = len(intersection) / len(truth_tokens)
-            
-            return recall
+            return len(intersection) / len(truth_tokens)
+    
+    def _recall_substring(self, predicted: str, truth: str) -> float:
+        """
+        Recall по словам: каждое слово ground truth ищем как подстроку в предсказании.
+        recall = доля найденных слов.
+        """
+        pred_norm = unidecode(predicted).lower()
+        truth_words = self._get_words(truth)
+        if not truth_words:
+            return 0.0
+        matched = sum(1 for w in truth_words if w in pred_norm)
+        return matched / len(truth_words)
+    
+    def calculate_recall(self, predicted: str, ground_truth) -> float:
+        """
+        Recall по словам как подстрокам: разбить ground truth на слова,
+        для каждого проверить, есть ли оно как подстрока в предсказании.
+        recall = доля найденных слов. Для all_answers — берём max.
+        """
+        # Handle multiple ground truth answers (all_answers)
+        if isinstance(ground_truth, list):
+            recalls = []
+            for truth in ground_truth:
+                if truth:
+                    r = self._recall_substring(predicted, truth)
+                    recalls.append(r)
+            return max(recalls) if recalls else 0.0
+        else:
+            return self._recall_substring(predicted, ground_truth)

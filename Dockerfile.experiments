@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir \
     pandas \
     "sentencepiece>=0.1.91" \
     psutil \
-    safetensors
+    safetensors \
+    unidecode
 
 # Установка зависимостей проекта (если есть requirements.txt)
 # COPY requirements.txt .
