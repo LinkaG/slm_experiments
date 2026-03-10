@@ -1,7 +1,6 @@
 from typing import List, Set, Optional, Any, Union
 import re
 
-from unidecode import unidecode
 from transformers import AutoTokenizer
 
 
@@ -59,9 +58,6 @@ class TokenRecallCalculator:
         if not text.strip():
             return set()
         
-        # Нормализация гомоглифов (кириллица → латиница) для корректного сравнения
-        text = unidecode(text)
-        
         # Extract words: sequences of letters, digits, and common word characters
         # This splits on whitespace and punctuation, keeping only words
         words = re.findall(r'\b\w+\b', text.lower())
@@ -70,14 +66,13 @@ class TokenRecallCalculator:
         return set(word for word in words if word)
     
     def _get_words(self, text) -> List[str]:
-        """Разбить текст на слова (с unidecode)."""
+        """Разбить текст на слова."""
         if isinstance(text, list):
             text = " ".join(str(t) for t in text)
         if not isinstance(text, str):
             text = str(text)
         if not text.strip():
             return []
-        text = unidecode(text)
         words = re.findall(r'\b\w+\b', text.lower())
         return [w for w in words if w]
     
@@ -107,7 +102,7 @@ class TokenRecallCalculator:
         Recall по словам: каждое слово ground truth ищем как подстроку в предсказании.
         recall = доля найденных слов.
         """
-        pred_norm = unidecode(predicted).lower()
+        pred_norm = predicted.lower()
         truth_words = self._get_words(truth)
         if not truth_words:
             return 0.0

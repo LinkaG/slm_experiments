@@ -3,4 +3,4 @@ type: simple_qa
 use_local: true
 train_path: data/simple_qa/simple_qa_converted.json
 eval_path: data/simple_qa/simple_qa_converted.json
-cache_dir: .cache/datasets
+cache_dir: data/simple_qa/cache  # отдельный кэш (обход .cache/datasets при проблемах с правами)
