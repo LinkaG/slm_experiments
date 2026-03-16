@@ -9,6 +9,17 @@ import time
 
 from .base import BaseModel
 
+# Monkey-patch для Phi-4: LossKwargs добавлен в transformers 4.50+, в старых версиях отсутствует
+def _patch_transformers_for_phi4():
+    """Добавить LossKwargs в transformers.utils если отсутствует (для Phi-4)."""
+    import transformers.utils as tf_utils
+    if not hasattr(tf_utils, 'LossKwargs'):
+        from typing import TypedDict
+        class LossKwargs(TypedDict, total=False):
+            num_items_in_batch: int
+        tf_utils.LossKwargs = LossKwargs
+_patch_transformers_for_phi4()
+
 # Monkey-patch для совместимости MiniCPM4 с новыми версиями transformers
 # Модель MiniCPM4 импортирует is_torch_fx_available, удалённый в transformers 5.x
 def _patch_transformers_for_minicpm():

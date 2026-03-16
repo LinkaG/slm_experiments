@@ -1,0 +1,11 @@
+name: gemma3_4b
+model_type: huggingface
+model_size: 4B
+model_path: google/gemma-3-4b-it
+max_length: 512
+temperature: 0.2  # Низкая температура для фактологических ответов
+top_p: 0.95
+repetition_penalty: 1.1
+max_new_tokens: 50  # Короткие конкретные ответы для фактологических вопросов
+device: cuda
+use_flash_attention: false

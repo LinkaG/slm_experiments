@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir \
     requests \
     omegaconf \
     hydra-core \
-    "transformers>=4.40.0,<5.0.0" \
+    "transformers>=4.49.0,<5.0.0" \
     tqdm \
     pandas \
     "sentencepiece>=0.1.91" \

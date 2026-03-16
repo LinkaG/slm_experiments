@@ -17,16 +17,18 @@
     # Без ClearML логирования
     poetry run python run_batch_experiments.py --no-clearml
     
-    # Oracle эксперименты в отдельный проект ClearML и папку output_2
-    poetry run python run_batch_experiments.py --experiment-mode oracle_context --clearml-project oracle --output-dir output_2
+    # Oracle эксперименты (автоматически: проект oracle_2, папка output_2)
+    poetry run python run_batch_experiments.py --experiment-mode oracle_context
     
-    # Oracle long context (NQ, MIRAGE, simple_qa — все датасеты с long_context)
-    poetry run python run_batch_experiments.py --experiment-mode oracle_long_context --clearml-project oracle --output-dir output_3
+    # Oracle long context (автоматически: проект oracle_long, папка output_3)
+    poetry run python run_batch_experiments.py --experiment-mode oracle_long_context
     
     # Или если активировано окружение Poetry (poetry shell):
     python run_batch_experiments.py
 
 Особенности:
+    - Папка и проект ClearML выбираются автоматически по experiment_mode:
+      no_context → outputs, slm-experiments | oracle_context → output_2, oracle_2 | oracle_long_context → output_3, oracle_long
     - MinIO bucket = имя конфига experiment_mode (no_context, oracle_context, oracle_long_context)
     - Автоматическое определение доступных GPU
     - Мониторинг памяти GPU через nvidia-smi
@@ -244,6 +246,15 @@ class GPUMonitor:
                 logger.debug(f"🔓 GPU {gpu_id} освобождена")
 
 
+# Маппинг experiment_mode -> (clearml_project, output_dir)
+# Используется по умолчанию, если не указаны --clearml-project и --output-dir
+EXPERIMENT_MODE_DEFAULTS: Dict[str, Tuple[str, str]] = {
+    "no_context": ("slm-experiments", "outputs"),
+    "oracle_context": ("oracle_2", "output_2"),
+    "oracle_long_context": ("oracle_long", "output_3"),
+}
+
+
 class BatchExperimentRunner:
     """Менеджер для запуска пакетных экспериментов."""
     
@@ -261,8 +272,12 @@ class BatchExperimentRunner:
         self.models = models
         self.datasets = datasets
         self.experiment_mode = experiment_mode
-        self.clearml_project = clearml_project
-        self.output_dir = output_dir
+        # Автоматически подставляем проект и папку по experiment_mode, если не указаны
+        defaults = EXPERIMENT_MODE_DEFAULTS.get(experiment_mode, ("slm-experiments", "outputs"))
+        self.clearml_project = clearml_project if clearml_project is not None else defaults[0]
+        self.output_dir = output_dir if output_dir is not None else defaults[1]
+        logger.info(f"📁 Папка результатов: {self.output_dir}")
+        logger.info(f"📊 ClearML проект: {self.clearml_project}")
         self.max_retries = retry_count
         self.use_clearml = use_clearml
         
@@ -318,7 +333,7 @@ class BatchExperimentRunner:
             load_dotenv()
             
             self.clearml_task = Task.create(
-                project_name=self.clearml_project or "slm-experiments",
+                project_name=self.clearml_project,
                 task_name=f"batch_experiments_{self.experiment_mode}",
                 task_type=Task.TaskTypes.custom
             )
@@ -865,9 +880,9 @@ def main():
     parser.add_argument('--experiment-mode', default='no_context',
                         help='Режим эксперимента (по умолчанию: no_context)')
     parser.add_argument('--clearml-project', default=None,
-                        help='Проект в ClearML для логирования (по умолчанию: slm-experiments)')
+                        help='Проект в ClearML (переопределяет авто-выбор по experiment_mode)')
     parser.add_argument('--output-dir', default=None,
-                        help='Базовая папка для сохранения результатов (по умолчанию: outputs)')
+                        help='Папка для результатов (переопределяет авто-выбор по experiment_mode)')
     parser.add_argument('--max-parallel', type=int, default=None,
                         help='Максимальное количество параллельных экспериментов')
     parser.add_argument('--retry-count', type=int, default=3,
