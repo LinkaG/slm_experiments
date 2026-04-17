@@ -98,8 +98,8 @@ class HuggingFaceModel(BaseModel):
             config: Model configuration containing:
                 - model_path: HuggingFace model name or path
                 - max_length: Maximum sequence length
-                - temperature: Sampling temperature
-                - top_p: Nucleus sampling parameter
+                - temperature, top_p, top_k, repetition_penalty, max_new_tokens: см. generate (игнорируются, если use_hf_generation_config=true)
+                - use_hf_generation_config: брать эти параметры из generation_config.json репозитория после загрузки весов
                 - device: Device to use (cuda/cpu)
                 - use_flash_attention: Whether to use flash attention
         """
@@ -107,13 +107,25 @@ class HuggingFaceModel(BaseModel):
         self.logger = logging.getLogger(__name__)
         self.last_prompt = None  # Store last used prompt for logging
         self.model_path = config.get('model_path', 'gpt2')
+        self.use_hf_generation_config = config.get('use_hf_generation_config', False)
         
         # Extract config parameters (max_length set after tokenizer load to use model's limit)
         self._config_max_length = config.get('max_length')
-        self.temperature = config.get('temperature', 0.7)
-        self.top_p = config.get('top_p', 0.9)
-        self.repetition_penalty = config.get('repetition_penalty', 1.1)  # Предотвращает зацикливание
-        self.max_new_tokens = config.get('max_new_tokens', 150)  # Максимальная длина ответа
+        # Параметры генерации: либо из YAML (по умолчанию), либо из generation_config.json модели
+        if self.use_hf_generation_config:
+            self._do_sample = None  # Задаётся из HF generation_config после загрузки весов
+            self.top_k = None
+            self.temperature = 0.7
+            self.top_p = 0.9
+            self.repetition_penalty = 1.1
+            self.max_new_tokens = 150
+        else:
+            self._do_sample = None
+            self.top_k = config.get('top_k')  # Опционально из YAML
+            self.temperature = config.get('temperature', 0.7)
+            self.top_p = config.get('top_p', 0.9)
+            self.repetition_penalty = config.get('repetition_penalty', 1.1)
+            self.max_new_tokens = config.get('max_new_tokens', 150)
         
         # Device configuration
         device_config = config.get('device', 'cuda')
@@ -261,9 +273,85 @@ class HuggingFaceModel(BaseModel):
             model_size_gb = self.get_model_size() / (1024 ** 3)
             self.logger.info(f"💾 Размер модели в памяти: {model_size_gb:.2f} GB")
             
+            if self.use_hf_generation_config:
+                self._apply_generation_config_from_hf()
+            
         except Exception as e:
             self.logger.error(f"❌ Error loading model: {e}")
             raise
+    
+    def _apply_generation_config_from_hf(self) -> None:
+        """Подставить параметры генерации из model.generation_config (файл generation_config.json в репозитории модели).
+        
+        Значения из JSON перезаписывают только те поля, где в GenerationConfig не None.
+        Поля temperature / top_p / max_new_tokens и т.д. в YAML при use_hf_generation_config не используются.
+        """
+        gc = getattr(self.model, 'generation_config', None)
+        if gc is None:
+            self.logger.warning("⚠️  У модели нет generation_config — оставлены запасные значения из кода")
+            return
+        applied = []
+        if getattr(gc, 'temperature', None) is not None:
+            self.temperature = float(gc.temperature)
+            applied.append(f"temperature={self.temperature}")
+        if getattr(gc, 'top_p', None) is not None:
+            self.top_p = float(gc.top_p)
+            applied.append(f"top_p={self.top_p}")
+        tk = getattr(gc, 'top_k', None)
+        if tk is not None:
+            self.top_k = int(tk)
+            applied.append(f"top_k={self.top_k}")
+        if getattr(gc, 'repetition_penalty', None) is not None:
+            self.repetition_penalty = float(gc.repetition_penalty)
+            applied.append(f"repetition_penalty={self.repetition_penalty}")
+        if getattr(gc, 'max_new_tokens', None) is not None:
+            self.max_new_tokens = int(gc.max_new_tokens)
+            applied.append(f"max_new_tokens={self.max_new_tokens}")
+        elif getattr(gc, 'max_length', None) is not None:
+            # max_length у HF обычно лимит всей последовательности, не число новых токенов — не подставляем в max_new_tokens
+            self.logger.debug(
+                "generation_config: есть max_length=%s, нет max_new_tokens — остаётся max_new_tokens=%s",
+                gc.max_length,
+                self.max_new_tokens,
+            )
+        if getattr(gc, 'do_sample', None) is not None:
+            self._do_sample = bool(gc.do_sample)
+            applied.append(f"do_sample={self._do_sample}")
+        if applied:
+            self.logger.info("📋 Параметры генерации из generation_config.json: " + ", ".join(applied))
+        else:
+            self.logger.warning(
+                "⚠️  generation_config.json почти пустой по сэмплингу — проверьте репозиторий модели на Hugging Face"
+            )
+    
+    @staticmethod
+    def _token_ids_present(value) -> bool:
+        """Проверка, что в generation_config задан pad/eos/bos (int или непустой список ID)."""
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple)):
+            return len(value) > 0
+        if isinstance(value, int):
+            return True
+        return False
+    
+    def _generation_special_token_kwargs(self) -> dict:
+        """pad_token_id / eos_token_id / bos_token_id из model.generation_config, иначе из tokenizer.
+        
+        eos_token_id может быть списком (несколько стоп-токенов) — так и передаём в ``generate``.
+        """
+        gc = getattr(self.model, 'generation_config', None)
+        out = {}
+        pad = getattr(gc, 'pad_token_id', None) if gc is not None else None
+        out['pad_token_id'] = pad if self._token_ids_present(pad) else self.tokenizer.pad_token_id
+        
+        eos = getattr(gc, 'eos_token_id', None) if gc is not None else None
+        out['eos_token_id'] = eos if self._token_ids_present(eos) else self.tokenizer.eos_token_id
+        
+        bos = getattr(gc, 'bos_token_id', None) if gc is not None else None
+        if self._token_ids_present(bos):
+            out['bos_token_id'] = bos
+        return out
     
     def _get_torch_dtype(self) -> torch.dtype:
         """Determine optimal dtype: use model's preferred format (bf16/fp16) if GPU supports it.
@@ -391,29 +479,37 @@ class HuggingFaceModel(BaseModel):
             
             # Generate
             with torch.no_grad():
-                # Для низкой температуры используем более детерминированную генерацию
-                use_sampling = self.temperature > 0.1
+                if self._do_sample is not None:
+                    use_sampling = self._do_sample
+                else:
+                    gc = getattr(self.model, 'generation_config', None)
+                    gc_do = getattr(gc, 'do_sample', None) if gc is not None else None
+                    if gc_do is not None:
+                        use_sampling = bool(gc_do)
+                    else:
+                        use_sampling = self.temperature > 0.1
                 
                 # Создаем словарь параметров для генерации
                 generate_kwargs = dict(inputs)  # Копируем inputs
+                generate_kwargs.update(self._generation_special_token_kwargs())
                 generate_kwargs.update({
                     'max_new_tokens': self.max_new_tokens,
                     'min_new_tokens': 1,  # Минимальная длина ответа
-                    'pad_token_id': self.tokenizer.pad_token_id,
-                    'eos_token_id': self.tokenizer.eos_token_id,
                     'repetition_penalty': self.repetition_penalty,
                     'no_repeat_ngram_size': 2,  # Предотвращает повторение биграмм
                 })
                 
                 if use_sampling:
-                    # Сэмплирование для температуры > 0.1
-                    generate_kwargs.update({
+                    gen_sample = {
                         'temperature': self.temperature,
                         'top_p': self.top_p,
                         'do_sample': True,
-                    })
+                    }
+                    if self.top_k is not None and self.top_k > 0:
+                        gen_sample['top_k'] = self.top_k
+                    generate_kwargs.update(gen_sample)
                 else:
-                    # Greedy decoding для очень низкой температуры
+                    # Greedy decoding для очень низкой температуры или do_sample=False из generation_config
                     generate_kwargs['do_sample'] = False
                 
                 # Попытка генерации с обработкой ошибки совместимости autocast
