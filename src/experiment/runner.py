@@ -278,20 +278,7 @@ class ExperimentRunner:
                     f"{power_limit:.2f}W ({power_pct:.1f}%)"
                 )
 
-        memory_file = self.config.output_dir / "memory_usage.json"
-        if memory_file.exists():
-            try:
-                with open(memory_file, "r", encoding="utf-8") as f:
-                    metrics["memory"] = json.load(f)
-            except Exception as e:
-                self.logger.warning(f"⚠️ Не удалось прочитать memory_usage.json: {e}")
-                metrics["memory"] = {}
-            try:
-                memory_file.unlink()
-            except OSError:
-                pass
-        else:
-            metrics["memory"] = {}
+        # Детальный таймлайн памяти — только в memory_usage.json (не дублируем в metrics.json)
 
         # Конфиг + метрики на диск и в S3
         conf_path = self._save_conf_file()
@@ -530,7 +517,7 @@ class ExperimentRunner:
         return path
 
     def _save_metrics_file(self, metrics: Dict[str, Any]) -> Path:
-        """{experiment}_metrics.json — метрики, пики памяти и блок memory (timeline + peak из логгера)."""
+        """{experiment}_metrics.json — метрики и пиковые скаляры памяти; таймлайн — в memory_usage.json."""
         stem = self._artifact_stem()
         path = self.config.output_dir / f"{stem}_metrics.json"
         with open(path, "w", encoding="utf-8") as f:

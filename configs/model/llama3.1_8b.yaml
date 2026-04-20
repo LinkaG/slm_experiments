@@ -2,10 +2,6 @@ name: llama3.1_8b
 model_type: huggingface
 model_size: 8B
 model_path: SillyTilly/Meta-Llama-3.1-8B
-max_length: 512
 temperature: 0.2  # Низкая температура для фактологических ответов
-top_p: 0.95
-repetition_penalty: 1.1
-max_new_tokens: 50  # Короткие конкретные ответы для фактологических вопросов
 device: cuda
 use_flash_attention: false

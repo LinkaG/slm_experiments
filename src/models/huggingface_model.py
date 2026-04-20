@@ -98,8 +98,11 @@ class HuggingFaceModel(BaseModel):
             config: Model configuration containing:
                 - model_path: HuggingFace model name or path
                 - max_length: Maximum sequence length
-                - temperature, top_p, top_k, repetition_penalty, max_new_tokens: см. generate (игнорируются, если use_hf_generation_config=true)
-                - use_hf_generation_config: брать эти параметры из generation_config.json репозитория после загрузки весов
+                - temperature: единственный параметр генерации из YAML конфига модели
+                - use_hf_generation_config: если True (по умолчанию), после загрузки весов подмешать top_p, top_k,
+                  repetition_penalty, max_new_tokens, do_sample из model.generation_config (generation_config.json);
+                  поля, не заданные в JSON, остаются на дефолтах в коде (top_p=0.9, repetition_penalty=1.1,
+                  max_new_tokens=150, top_k=None). Температура из JSON не берётся
                 - device: Device to use (cuda/cpu)
                 - use_flash_attention: Whether to use flash attention
         """
@@ -107,25 +110,17 @@ class HuggingFaceModel(BaseModel):
         self.logger = logging.getLogger(__name__)
         self.last_prompt = None  # Store last used prompt for logging
         self.model_path = config.get('model_path', 'gpt2')
-        self.use_hf_generation_config = config.get('use_hf_generation_config', False)
+        self.use_hf_generation_config = config.get('use_hf_generation_config', True)
         
         # Extract config parameters (max_length set after tokenizer load to use model's limit)
         self._config_max_length = config.get('max_length')
-        # Параметры генерации: либо из YAML (по умолчанию), либо из generation_config.json модели
-        if self.use_hf_generation_config:
-            self._do_sample = None  # Задаётся из HF generation_config после загрузки весов
-            self.top_k = None
-            self.temperature = 0.7
-            self.top_p = 0.9
-            self.repetition_penalty = 1.1
-            self.max_new_tokens = 150
-        else:
-            self._do_sample = None
-            self.top_k = config.get('top_k')  # Опционально из YAML
-            self.temperature = config.get('temperature', 0.7)
-            self.top_p = config.get('top_p', 0.9)
-            self.repetition_penalty = config.get('repetition_penalty', 1.1)
-            self.max_new_tokens = config.get('max_new_tokens', 150)
+        # Параметры генерации: temperature из YAML; остальное — дефолты, затем слияние с generation_config.json
+        self._do_sample = None
+        self.top_k = None
+        self.temperature = config.get('temperature', 0.7)
+        self.top_p = 0.9
+        self.repetition_penalty = 1.1
+        self.max_new_tokens = 150
         
         # Device configuration
         device_config = config.get('device', 'cuda')
@@ -281,19 +276,18 @@ class HuggingFaceModel(BaseModel):
             raise
     
     def _apply_generation_config_from_hf(self) -> None:
-        """Подставить параметры генерации из model.generation_config (файл generation_config.json в репозитории модели).
+        """Подставить параметры генерации из model.generation_config (generation_config.json в репозитории).
         
-        Значения из JSON перезаписывают только те поля, где в GenerationConfig не None.
-        Поля temperature / top_p / max_new_tokens и т.д. в YAML при use_hf_generation_config не используются.
+        Перезаписываются только поля, где в GenerationConfig не None. Температура из файла не читается.
         """
         gc = getattr(self.model, 'generation_config', None)
         if gc is None:
-            self.logger.warning("⚠️  У модели нет generation_config — оставлены запасные значения из кода")
+            self.logger.warning(
+                "⚠️  У модели нет generation_config — top_p/max_new_tokens/… из дефолтов кода, temperature=%s из конфига",
+                self.temperature,
+            )
             return
         applied = []
-        if getattr(gc, 'temperature', None) is not None:
-            self.temperature = float(gc.temperature)
-            applied.append(f"temperature={self.temperature}")
         if getattr(gc, 'top_p', None) is not None:
             self.top_p = float(gc.top_p)
             applied.append(f"top_p={self.top_p}")
@@ -318,10 +312,16 @@ class HuggingFaceModel(BaseModel):
             self._do_sample = bool(gc.do_sample)
             applied.append(f"do_sample={self._do_sample}")
         if applied:
-            self.logger.info("📋 Параметры генерации из generation_config.json: " + ", ".join(applied))
+            self.logger.info(
+                "📋 Параметры из generation_config.json: "
+                + ", ".join(applied)
+                + f"; temperature из конфига модели: {self.temperature}"
+            )
         else:
-            self.logger.warning(
-                "⚠️  generation_config.json почти пустой по сэмплингу — проверьте репозиторий модели на Hugging Face"
+            self.logger.info(
+                "📋 В generation_config.json нет полей top_p/top_k/repetition_penalty/max_new_tokens/do_sample — "
+                "используются дефолты кода; temperature=%s из конфига модели",
+                self.temperature,
             )
     
     @staticmethod
