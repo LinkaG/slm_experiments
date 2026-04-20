@@ -1,7 +1,5 @@
 name: local_mirage
-type: mirage
-use_local: true
-train_path: data/mirage/mirage_converted.json
-eval_path: data/mirage/mirage_converted.json
+type: qa_pairs_jsonl
+qa_pairs_path: data/mirage/qa_pairs.jsonl
 cache_dir: .cache/datasets
 

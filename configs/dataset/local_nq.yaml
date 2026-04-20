@@ -1,6 +1,4 @@
 name: local_nq_full
-type: nq
-use_local: true
-train_path: data/nq/nq_full_dataset.json
-eval_path: data/nq/nq_full_dataset.json
+type: qa_pairs_jsonl
+qa_pairs_path: data/nq/qa_pairs.jsonl
 cache_dir: .cache/datasets

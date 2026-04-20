@@ -1,1048 +1,123 @@
-# Фреймворк для экспериментов с малыми языковыми моделями
+# Эксперименты с компактными языковыми моделями
 
-Этот фреймворк предоставляет гибкую систему для проведения экспериментов с малыми языковыми моделями (smolLM2, Qwen3) и различными ретриверами.
+Hydra-конфиги, один режим **`no_context`** (вопрос–ответ без внешнего контекста), датасеты в формате **`qa_pairs.jsonl`**. Основной сценарий на GPU: **`run_batch_experiments.py`** поднимает дочерние контейнеры Docker с монтированием репозитория и кэша моделей.
 
-## 🚀 Быстрый старт
+## Требования
 
-### Вариант 1: Запуск через Docker (рекомендуется)
-
-Самый простой способ - использовать Docker с предустановленными зависимостями:
-
-```bash
-# 1. Сборка образа (один раз, ~10-15 минут)
-./build_docker_image.sh
-
-# 2. Запуск эксперимента
-./run_experiment_fast.sh run_experiment_simple.py experiment_mode=test_10_samples
-```
-
-Подробнее см. раздел [🐳 Запуск через Docker](#-запуск-через-docker).
-
-### Вариант 2: Локальная установка
-
-#### 1. Установка зависимостей
-```bash
-# Установка основных зависимостей
-poetry install
-
-# Или через pip в виртуальном окружении Poetry
-poetry run pip install clearml omegaconf hydra-core pandas
-```
-
-#### 2. Тест подключения к S3
-```bash
-poetry run python test_s3_connection.py --bucket datasets
-```
-
-#### 3. Получение данных
-```bash
-# Быстрый способ - скачивание готовых данных (рекомендуется!)
-poetry run python download_processed_data.py --mode both --bucket datasets
-
-# Или полная обработка данных (медленнее)
-poetry run python process_s3_data.py --mode both --bucket datasets --no-upload
-
-# После обработки данные будут в папке data/
-ls -la data/nq/
-ls -la data/simple_qa/
-```
-
-#### 4. Запуск эксперимента
-```bash
-# Полный эксперимент на всех данных (~3610 примеров)
-# Конфигурация берется из configs/config.yaml
-CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-
-# Эксперимент без ClearML логирования
-poetry run python run_experiment_simple.py --no-clearml
-
-# Для запуска с другими параметрами - отредактируйте configs/config.yaml:
-# - dataset: local_nq / local_simple_qa / local_mirage
-# - model: smollm2_135m, smollm2_360m, smollm2_1.7b
-# - experiment_mode: no_context, test_10_samples, test_100_samples
-```
-
-## 📊 Новые возможности
-
-- **📊 ClearML интеграция** - полное логирование экспериментов в ClearML
-- **🎯 GPU поддержка** - автоматическое использование Tesla V100 32GB
-- **⚡ Быстрое скачивание готовых данных** - готовые обработанные датасеты из S3
-- **🔄 Автоматическая обработка данных из S3** - скачивание, конвертация и загрузка результатов
-- **📥 Скачивание данных из S3** - удобные скрипты для работы с данными
-- **📤 Загрузка данных в S3** - синхронизация локальных и облачных данных
-- **🔍 Тестирование S3** - проверка подключения и доступности данных
-- **📁 Управление данными** - полный цикл работы с данными в облаке
-- **💾 Отслеживание памяти** - мониторинг CPU и GPU памяти
-
-## Структура проекта
-
-```
-slm_experiments/
-├── configs/               # Конфигурационные файлы Hydra
-│   ├── model/            # Конфигурации моделей
-│   ├── retriever/        # Конфигурации ретриверов
-│   └── dataset/          # Конфигурации датасетов
-├── src/
-│   ├── data/             # Обработка датасетов и интеграция с S3
-│   ├── models/           # Реализации моделей
-│   ├── retrievers/       # Реализации ретриверов
-│   ├── experiment/       # Запуск экспериментов и метрики
-│   └── utils/            # Общие утилиты
-├── tests/                # Тесты
-└── scripts/              # Вспомогательные скрипты
-```
+- Python 3.10–3.13, [Poetry](https://python-poetry.org/)
+- NVIDIA GPU и драйвер (для прогонов с CUDA)
+- Для ClearML и MinIO: Docker-сеть **`clearml_backend`** (см. документацию вашего стенда ClearML)
 
 ## Установка
 
-### Требования
-
-- Python 3.10+ (рекомендуется 3.10-3.13)
-- Poetry (менеджер зависимостей)
-- Git
-- NVIDIA GPU с CUDA (опционально, но рекомендуется для ускорения)
-  - Tesla V100 32GB или аналогичная
-  - NVIDIA драйверы 550+ для поддержки CUDA
-
-### Установка Poetry
-
-Если Poetry не установлен:
-
-```bash
-# Установка через pip
-pip3 install poetry
-
-# Или через официальный установщик
-curl -sSL https://install.python-poetry.org | python3 -
-```
-
-Если poetry установлен в пользовательскую дикерторию, то до вызова poetry использовать команду:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-### Настройка проекта
-
-1. **Клонирование репозитория:**
 ```bash
 git clone <repository-url>
 cd slm_experiments
-```
-
-2. **Установка зависимостей:**
-```bash
-# Установка всех зависимостей
 poetry install
-
-# Или только основных (без PyTorch для экономии места)
-poetry install --no-dev
+cp .env.example .env
+# Заполните .env (ClearML, MinIO, HF_TOKEN при необходимости, DOCKER_MODELS_CACHE)
 ```
 
-**Новые зависимости:**
-- `boto3` - для работы с AWS S3
-- `python-dotenv` - для загрузки переменных окружения из .env файла
-- `clearml` - для логирования экспериментов
-- `omegaconf` и `hydra-core` - для управления конфигурациями
-- `pandas` - для создания таблиц результатов
+## Переменные окружения
 
-3. **Активация виртуального окружения:**
-```bash
-# Активация shell
-poetry shell
+См. **`.env.example`**. Важно для батча в Docker:
 
-# Или запуск команд через poetry run
-poetry run python script.py
-```
+- **`DOCKER_MODELS_CACHE`** — каталог на хосте для Hugging Face / datasets (подкаталоги `huggingface/`, `datasets/`).
+- **`CLEARML_S3_ACCESS_KEY` / `CLEARML_S3_SECRET_KEY` / `CLEARML_S3_REGION`** — подставляются в дочерние контейнеры из окружения хоста после `load_dotenv()` в батче.
+- **`CLEARML_S3_ENDPOINT`** — обычно URL MinIO **с хоста** (IP или localhost).
+- **`CLEARML_S3_DOCKER_ENDPOINT`** — URL MinIO **из контейнера**; по умолчанию в батче используется `http://minio:9000` (имя сервиса в сети Docker).
 
-4. **Настройка переменных окружения:**
-```bash
-# Файл .env уже содержит настройки S3 для проекта
-# Проверьте, что файл .env содержит корректные креденшиалы:
-cat .env | grep CLEARML_S3
+Конфиг ClearML внутри контейнера: **`clearml.conf.docker`** (копируется в `~/.clearml.conf` при старте SDK).
 
-# Если нужно изменить настройки S3, отредактируйте .env:
-# CLEARML_S3_ENDPOINT=http://51.250.43.3:9000
-# CLEARML_S3_BUCKET=clearml-artifacts
-# CLEARML_S3_ACCESS_KEY=your_key
-# CLEARML_S3_SECRET_KEY=your_secret
-# CLEARML_S3_REGION=us-east-1
-```
+## Данные
 
-5. **Проверка GPU (опционально, но рекомендуется):**
-```bash
-# Проверка наличия NVIDIA GPU
-nvidia-smi
+Датасет задаётся в **`configs/dataset/*.yaml`**, тип **`qa_pairs_jsonl`**: файл **`qa_pairs.jsonl`** с полями `question_id`, `question`, `answer` (список строк).
 
-# Проверка доступности CUDA в PyTorch
-poetry run python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
-
-# Если GPU не определяется, возможно нужно установить/обновить драйвера NVIDIA:
-# sudo apt update
-# sudo apt install nvidia-driver-550  # для Tesla V100
-# sudo reboot  # перезагрузка требуется после установки драйверов
-```
-
-### Альтернативная установка (без Poetry)
-
-Если вы предпочитаете pip:
+## Одиночный эксперимент (на хосте)
 
 ```bash
-# Создание виртуального окружения
-python3.10 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или
-venv\Scripts\activate     # Windows
-
-# Установка зависимостей
-pip install -r requirements.txt
+poetry run python run_experiment_simple.py model=qwen_0.6b dataset=local_simple_qa experiment_mode=no_context
 ```
 
-## 🐳 Запуск через Docker
+Без ClearML:
 
-Проект поддерживает запуск экспериментов через Docker, что упрощает развертывание и обеспечивает изолированное окружение.
+```bash
+poetry run python run_experiment_simple.py --no-clearml model=qwen_0.6b dataset=local_simple_qa experiment_mode=no_context
+```
 
-### Преимущества Docker
+По умолчанию см. **`configs/config.yaml`**.
 
-- ✅ **Изолированное окружение** - все зависимости предустановлены
-- ✅ **Универсальность** - работает на разных машинах без настройки
-- ✅ **GPU поддержка** - автоматическое использование GPU при наличии
-- ✅ **Быстрый запуск** - после сборки образа запуск занимает секунды
-
-### Требования
-
-- Docker установлен и запущен
-- Docker сеть `clearml_backend` создана (для работы с ClearML сервисами)
-- (Опционально) `nvidia-container-toolkit` для использования GPU
-
-### Быстрый старт
-
-#### 1. Сборка Docker образа (один раз)
+## Docker-образ эксперимента
 
 ```bash
 ./build_docker_image.sh
 ```
 
-Это займет ~10-15 минут при первом запуске. Образ использует базовый образ PyTorch с CUDA поддержкой, который работает как на GPU, так и на CPU.
+Имя образа по умолчанию: **`slm-experiments:latest`**. Батч ожидает сеть **`clearml_backend`**.
 
-#### 2. Запуск экспериментов
+## Пакетный запуск (рекомендуется)
 
-**Вариант А: Быстрый запуск (рекомендуется)**
-
-Использует предсобранный образ с установленными зависимостями:
+С хоста (один процесс оркестратора; каждая задача — отдельный `docker run` с GPU):
 
 ```bash
-# Базовый запуск
-./run_experiment_fast.sh run_experiment_simple.py
+# все модели × все датасеты из configs/model и configs/dataset
+poetry run python run_batch_experiments.py --experiment-mode no_context
 
-# С параметрами Hydra
-./run_experiment_fast.sh run_experiment_simple.py experiment_mode=test_10_samples
+# выборочно
+poetry run python run_batch_experiments.py \
+  --experiment-mode no_context \
+  --models qwen_0.6b \
+  --datasets local_simple_qa
 
-# Без ClearML
-./run_experiment_fast.sh run_experiment_simple.py --no-clearml
+poetry run python run_batch_experiments.py --no-clearml --max-parallel 2
 ```
 
-**Вариант Б: Запуск через временный контейнер**
+Лог батча: **`batch_experiments.log`**.
 
-Устанавливает зависимости каждый раз (медленнее, но не требует предварительной сборки):
+### Долгий прогон в tmux
 
 ```bash
-# Базовый запуск
-./run_in_docker_network.sh run_experiment_simple.py
-
-# С параметрами Hydra
-./run_in_docker_network.sh run_experiment_simple.py experiment_mode=test_10_samples
-```
-
-### Настройка GPU (опционально)
-
-Для использования GPU в Docker контейнерах установите `nvidia-container-toolkit`:
-
-```bash
-# Определение дистрибутива
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-
-# Добавление репозитория NVIDIA
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
-  sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-
-# Установка
-sudo apt-get update
-sudo apt-get install -y nvidia-container-toolkit
-sudo systemctl restart docker
-
-# Проверка
-docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
-```
-
-После установки пересоберите образ:
-
-```bash
-./build_docker_image.sh
-```
-
-Скрипты автоматически определят доступность GPU и будут использовать его при наличии.
-
-### Конфигурация ClearML
-
-При запуске через Docker используется специальная конфигурация `clearml.conf.docker`, которая:
-- Использует имена Docker контейнеров вместо `localhost`
-- Автоматически монтируется в контейнер как `~/.clearml.conf`
-
-Убедитесь, что Docker сеть `clearml_backend` существует и содержит контейнеры ClearML:
-- `clearml-apiserver` (порт 8008)
-- `clearml-webserver` (порт 80)
-- `clearml-fileserver` (порт 8081)
-- `minio` (порт 9000)
-
-### Проверка работы
-
-```bash
-# Проверка доступности сервисов через Docker сеть
-./test_services.sh
-
-# Проверка подключения к ClearML
-docker run --rm --network clearml_backend \
-  -v "$(pwd):/workspace" \
-  -v "$(pwd)/clearml.conf.docker:/root/.clearml.conf:ro" \
-  python:3.10-slim \
-  bash -c "pip install -q clearml && python -c 'from clearml import Task; print(\"ClearML работает!\")'"
-```
-
-### Когда пересобирать образ
-
-Образ нужно пересобрать если:
-- Изменились зависимости проекта
-- Нужны новые пакеты
-- Обновились версии пакетов
-- Установили `nvidia-container-toolkit` (для GPU поддержки)
-
-```bash
-./build_docker_image.sh
-```
-
-Docker использует кэш для неизмененных слоев, поэтому пересборка будет быстрее.
-
-## Работа с данными
-
-### Локальные данные
-
-Проект поддерживает работу с локальными данными без необходимости настройки S3:
-
-1. **Natural Questions (NQ)**:
-   - Полный датасет: `data/nq/nq_full_dataset.json` (3610 примеров)
-   - Исходный файл: `data/nq/NQ-open.dev.merged.jsonl`
-   - Конвертированный для RAG тестирования
-
-2. **SimpleQA**:
-   - Конвертированный датасет: `data/simple_qa/simple_qa_converted.json`
-   - Исходный файл: `data/simple_qa/simple_qa_test_set_with_documents.csv`
-
-3. **MIRAGE**:
-   - Конвертированный датасет: `data/mirage/mirage_converted.json`
-   - Исходные файлы: `MIRAGE/mirage/dataset.json` и `MIRAGE/mirage/oracle.json`
-   - Датасет содержит вопросы, ответы и ссылки на документы (в основном Wikipedia)
-   - Автоматически скачивает документы по URL и очищает HTML разметку
-   - Интегрирует `doc_chunk` из `oracle.json` как `long_answer` для каждого вопроса
-
-### Конвертация данных
-
-#### Natural Questions (NQ):
-```bash
-# Конвертация полного датасета
-poetry run python convert_nq_data.py \
-  --input data/nq/NQ-open.dev.merged.jsonl \
-  --output data/nq/nq_full_dataset.json
-```
-
-#### SimpleQA:
-```bash
-# Конвертация SimpleQA датасета
-poetry run python convert_simple_qa_data.py \
-  --input data/simple_qa/simple_qa_test_set_with_documents.csv \
-  --output data/simple_qa/simple_qa_converted.json
-```
-
-#### MIRAGE:
-```bash
-# Конвертация MIRAGE датасета с загрузкой документов
-poetry run python convert_mirage_data.py \
-  --input MIRAGE/mirage/dataset.json \
-  --output data/mirage/mirage_converted.json \
-  --oracle-file MIRAGE/mirage/oracle.json
-
-# Без загрузки документов (если документы уже скачаны)
-poetry run python convert_mirage_data.py \
-  --input MIRAGE/mirage/dataset.json \
-  --output data/mirage/mirage_converted.json \
-  --oracle-file MIRAGE/mirage/oracle.json \
-  --no-download
-
-# Ограничение количества элементов (для тестирования)
-poetry run python convert_mirage_data.py \
-  --input MIRAGE/mirage/dataset.json \
-  --output data/mirage/mirage_converted.json \
-  --oracle-file MIRAGE/mirage/oracle.json \
-  --max-items 100
-
-# С настройкой задержки между запросами (для избежания rate limiting)
-poetry run python convert_mirage_data.py \
-  --input MIRAGE/mirage/dataset.json \
-  --output data/mirage/mirage_converted.json \
-  --oracle-file MIRAGE/mirage/oracle.json \
-  --delay 1.0
-```
-
-**Особенности конвертации MIRAGE**:
-- Автоматически скачивает документы по `doc_url` из каждого элемента датасета
-- Очищает HTML разметку (особенно для Wikipedia страниц)
-- Извлекает `doc_chunk` из `oracle.json` по `query_id` и добавляет как `long_answer`
-- Кеширует скачанные документы в `.cache/mirage_docs/` для ускорения повторных запусков
-- Поддерживает задержку между запросами для избежания блокировок
-
-**Формат конвертированного MIRAGE датасета**:
-```json
-{
-  "question": "What is John Mayne's occupation?",
-  "answer": "journalist",
-  "context": "John Mayne (26 March 1759 – 14 March 1836) was a Scottish journalist...",
-  "metadata": {
-    "id": "ce40d2c4-f403-4736-ace1-7fca9c722aba",
-    "url": "https://en.wikipedia.org/wiki?curid=1098597",
-    "title": "John Mayne",
-    "source": "popqa",
-    "all_answers": ["journalist", "journo", "journalists"],
-    "long_answer": "Scottish printer, journalist and poet\nJohn Mayne...",
-    "long_context": ["Scottish printer, journalist and poet\nJohn Mayne..."]
-  }
-}
-```
-
-### Тестирование загрузки данных
-```bash
-# Тест NQ данных
-poetry run python test_local_data.py
-
-# Тест SimpleQA данных
-poetry run python test_simple_qa_data.py
-```
-
-### S3 данные (опционально)
-
-Проект поддерживает работу с данными в S3 хранилище. В bucket `datasets` уже хранятся исходные файлы:
-- `NQ-open.dev.merged.jsonl` - исходный файл Natural Questions
-- `simple_qa_test_set_with_documents.csv` - исходный файл SimpleQA
-
-#### 🔧 Настройка S3
-
-1. **Проверка подключения к S3**:
-   ```bash
-   # Тест подключения к S3
-   poetry run python test_s3_connection.py --bucket datasets
-   
-   # Проверка наличия файлов датасетов
-   poetry run python test_s3_connection.py --bucket datasets --check-datasets
-   ```
-
-#### 📊 Обработка данных из S3
-
-**Рекомендуемый способ** - автоматическая обработка данных:
-
-```bash
-# Обработка NQ данных (скачать исходный файл, конвертировать, загрузить результат)
-poetry run python process_s3_data.py --mode nq --bucket datasets
-
-# Обработка SimpleQA данных
-poetry run python process_s3_data.py --mode simple_qa --bucket datasets
-
-# Обработка всех данных сразу
-poetry run python process_s3_data.py --mode both --bucket datasets
-
-# Обработка без загрузки результатов в S3 (только локально)
-# Обрабатывает оба датасета: NQ и SimpleQA
-poetry run python process_s3_data.py --mode both --bucket datasets --no-upload
-```
-
-#### 📥 Скачивание данных из S3
-
-**Быстрый способ - скачивание готовых обработанных данных:**
-```bash
-# Скачивание готовых NQ данных (быстро!)
-poetry run python download_processed_data.py --mode nq --bucket datasets
-
-# Скачивание готовых SimpleQA данных (быстро!)
-poetry run python download_processed_data.py --mode simple_qa --bucket datasets
-
-# Скачивание всех готовых данных (рекомендуется!)
-poetry run python download_processed_data.py --mode both --bucket datasets
-```
-
-**Полная обработка данных (медленнее, но создает все файлы):**
-```bash
-# Скачивание NQ данных (сохраняется в data/nq/)
-poetry run python download_from_s3.py --mode nq --bucket datasets
-
-# Скачивание SimpleQA данных (сохраняется в data/simple_qa/)
-poetry run python download_from_s3.py --mode simple_qa --bucket datasets
-
-# Просмотр содержимого S3 bucket
-poetry run python download_from_s3.py --mode browse --bucket datasets
-
-# Скачивание произвольного файла
-poetry run python download_from_s3.py --mode custom \
-  --s3-key NQ-open.dev.merged.jsonl \
-  --local-file data/nq/NQ-open.dev.merged.jsonl \
-  --bucket datasets
-```
-
-#### 📤 Загрузка данных в S3
-
-```bash
-# Загрузка NQ данных (из data/nq/)
-poetry run python upload_to_s3.py --mode nq --bucket datasets
-
-# Загрузка SimpleQA данных (из data/simple_qa/)
-poetry run python upload_to_s3.py --mode simple_qa --bucket datasets
-
-# Загрузка произвольного файла
-poetry run python upload_to_s3.py --mode custom \
-  --local-file data/my_data.json \
-  --s3-key my_data.json \
-  --bucket datasets
-```
-
-#### 🔍 Тестирование S3
-
-```bash
-# Базовый тест подключения
-poetry run python test_s3_connection.py --bucket datasets
-
-# Тест с проверкой операций с файлами
-poetry run python test_s3_connection.py --bucket datasets --test-operations
-
-# Тест с проверкой файлов датасетов
-poetry run python test_s3_connection.py --bucket datasets --check-datasets
-
-# Полный тест
-poetry run python test_s3_connection.py --bucket datasets --test-operations --check-datasets
-```
-
-#### 📁 Структура данных в S3
-
-```
-s3://datasets/
-├── NQ-open.dev.merged.jsonl                    # Исходный файл NQ
-├── simple_qa_test_set_with_documents.csv        # Исходный файл SimpleQA
-├── nq_full_dataset.json                         # Конвертированный NQ (после обработки)
-├── nq_converted_eval.json                       # NQ eval данные (после обработки)
-├── nq_converted_train.json                      # NQ train данные (после обработки)
-├── simple_qa_converted.json                     # Конвертированный SimpleQA (после обработки)
-├── simple_qa_train.json                         # SimpleQA train данные (после обработки)
-└── simple_qa_eval.json                          # SimpleQA eval данные (после обработки)
-```
-
-## Руководство по проведению экспериментов
-
-### Подготовка к эксперименту
-
-1. **Выбор компонентов**:
-   - Определите модель (smolLM2 или Qwen3) и её размер
-   - Выберите датасет (NQ или SimpleQA)
-   - Выберите тип ретривера
-
-2. **Проверка данных**:
-   - Убедитесь, что данные доступны в S3 по указанным путям в конфигах
-   - Проверьте наличие AWS credentials в `.env`
-   - При необходимости очистите кэш данных (`.cache/datasets/`)
-
-3. **Настройка окружения**:
-   - Проверьте доступность GPU и объем памяти
-   - Для больших моделей (>1.7B) убедитесь в наличии минимум 16GB GPU памяти
-   - При необходимости настройте параметры оптимизации памяти в конфиге модели
-
-### Режимы экспериментов
-
-Фреймворк поддерживает три режима проведения экспериментов:
-
-1. **Без контекста** (no_context):
-   - Оценка способности модели отвечать на вопросы без дополнительного контекста
-   - Проверка базовых знаний модели
-   ```bash
-   poetry run python run_experiment_simple.py experiment_mode=no_context
-   ```
-
-2. **С идеальным контекстом** (oracle_context):
-   - Использование ground truth контекста из датасета
-   - Оценка верхней границы производительности модели
-   ```bash
-   poetry run python run_experiment_simple.py experiment_mode=oracle_context
-   ```
-
-3. **С ретривером** (retriever_context):
-   - Стандартный режим с использованием ретривера
-   - Оценка производительности всего пайплайна
-   ```bash
-   poetry run python run_experiment_simple.py experiment_mode=retriever_context
-   ```
-
-### Запуск экспериментов
-
-#### 🚀 **Основной способ (рекомендуемый):**
-
-```bash
-# Базовый запуск с конфигурацией из configs/config.yaml
-CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-
-# Запуск без ClearML
-poetry run python run_experiment_simple.py --no-clearml
-
-# Для изменения параметров (модель, датасет, режим) - 
-# отредактируйте файл configs/config.yaml
-```
-
-#### 🔧 **Настройка через config.yaml:**
-
-Отредактируйте `configs/config.yaml`:
-
-```yaml
-defaults:
-  - model: smollm2_135m        # Модель по умолчанию
-  - dataset: rag_nq           # Датасет по умолчанию  
-  - experiment_mode: no_context # Режим по умолчанию
-  - _self_
-
-experiment:
-  name: ${model.name}_${dataset.name}_${experiment_mode.name}
-  output_dir: outputs/${experiment.name}
-  seed: 42
-  log_predictions: true
-  save_contexts: true
-  max_samples: null  # Использовать все данные
-```
-
-#### 🌐 **Запуск в фоновом режиме:**
-
-```bash
-# Запуск в фоне с логированием (с ClearML)
-# Конфигурация берется из configs/config.yaml
-CLEARML_CONFIG_FILE=./clearml.conf nohup poetry run python run_experiment_simple.py > experiment.log 2>&1 &
-
-# Или без ClearML
-nohup poetry run python run_experiment_simple.py --no-clearml > experiment.log 2>&1 &
-
-# Мониторинг прогресса
-tail -f experiment.log
-
-# Проверка процесса
-ps aux | grep python
-
-# Или точнее
-ps aux | grep -E "(python|run_experiment)" | grep -v grep
-
-# Мониторинг GPU
-watch -n 1 nvidia-smi
-```
-
-#### 🛑 **Остановка фонового эксперимента:**
-
-```bash
-# Остановить все процессы по имени скрипта
-pkill -f "run_experiment_simple.py"
-
-# Принудительная остановка (если не помогает)
-pkill -9 -f "run_experiment_simple.py"
-
-# Остановить по PID (если знаете номер процесса)
-kill <PID>
-
-# Проверить, что все остановлено
-ps aux | grep run_experiment_simple | grep -v grep
-```
-
-#### 🖥️ **Альтернатива: screen/tmux (рекомендуется):**
-
-```bash
-# Запуск в screen
-screen -S experiment
-CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-# Ctrl+A, D для отключения от screen
-
-# Возврат к screen
-screen -r experiment
-
-# Остановка: Ctrl+C в screen
-
-# Или через tmux
-tmux new-session -s experiment
-CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-# Ctrl+B, D для отключения
-
-# Возврат к tmux
-tmux attach -t experiment
-```
-
-#### 📊 **Доступные опции (указываются в configs/config.yaml):**
-
-**Модели** (в defaults: model):
-- `smollm2_135m` - SmolLM-135M (быстрая, 135M параметров)
-- `smollm2_360m` - SmolLM-360M (средняя, 360M параметров)
-- `smollm2_1.7b` - SmolLM-1.7B (большая, 1.7B параметров)
-- `qwen_0.6b` - Qwen-0.6B
-- `qwen_1.7b` - Qwen-1.7B
-- `qwen_4b` - Qwen-4B
-
-**Датасеты** (в defaults: dataset):
-- `local_nq` - Natural Questions (локально, 3610 примеров)
-- `local_simple_qa` - SimpleQA (локально)
-- `local_mirage` - MIRAGE (локально, с автоматической загрузкой документов)
-- `rag_nq` - Natural Questions (для RAG экспериментов)
-
-**Режимы экспериментов** (в defaults: experiment_mode):
-- `no_context` - без контекста, все примеры
-- `test_10_samples` - тестовый режим, 10 примеров
-- `test_100_samples` - тестовый режим, 100 примеров
-- `oracle_context` - с оракульным контекстом
-- `retriever_context` - с ретривером
-
-### Мониторинг и анализ
-
-1. **Отслеживание прогресса**:
-   - Логи сохраняются в `experiment.log`
-   - Результаты в `outputs/<experiment_name>/results.json`
-   - Мониторинг в реальном времени: `tail -f experiment.log`
-
-2. **Анализ результатов**:
-   - Основные метрики: Token Recall, время выполнения
-   - Детальные результаты в JSON формате
-   - Предсказания модели сохраняются для анализа
-   - Token Recall показывает качество ответов модели
-   - Детальная статистика использования памяти в `outputs/<experiment_name>/memory_usage.json`
-
-3. **Мониторинг ресурсов**:
-   - Отслеживание CPU и GPU памяти (логируется автоматически в ClearML)
-   - Мониторинг прогресса: `tail -f experiment.log`
-   - Проверка процессов: `ps aux | grep python`
-   - GPU мониторинг в реальном времени: `watch -n 1 nvidia-smi`
-   - Проверка CUDA в PyTorch: `poetry run python -c "import torch; print('CUDA:', torch.cuda.is_available())"`
-   - Вся статистика памяти сохраняется в `outputs/<experiment_name>/memory_usage.json`
-
-3. **Отладка проблем**:
-   - Проверьте логи в `outputs/<experiment_name>/`
-   - При OOM ошибках уменьшите batch_size или включите оптимизации памяти
-   - При проблемах с данными проверьте кэш и S3 доступ
-
-### 🚀 Параллельный запуск серии экспериментов
-
-Для автоматического запуска всех комбинаций моделей и датасетов используйте скрипт `run_batch_experiments.py`:
-
-#### Основные возможности:
-
-- ✅ **Автоматическая генерация задач** - все комбинации моделей × датасетов
-- ✅ **Управление GPU памятью** - автоматическое распределение по доступным GPU
-- ✅ **Максимальный параллелизм** - использование всех GPU одновременно
-- ✅ **Эксклюзивное использование GPU** - одна GPU = один эксперимент (для корректного логирования мощности)
-- ✅ **Автоматический retry** - повтор при ошибках (по умолчанию 3 попытки)
-- ✅ **Логирование в ClearML** - прогресс и статистика всех экспериментов
-- ✅ **Учет других пользователей** - проверка реального использования GPU через nvidia-smi
-
-#### Быстрый старт:
-
-```bash
-# Запуск всех экспериментов (все модели × все датасеты)
-poetry shell
-python run_batch_experiments.py
-
-# Запуск с конкретными моделями и датасетами
-poetry run python run_batch_experiments.py --models qwen_0.6b qwen_1.7b --datasets local_simple_qa
-
-# Ограничение параллелизма (по умолчанию = количество GPU)
-poetry run python run_batch_experiments.py --max-parallel 2
-
-# Без ClearML логирования
-poetry run python run_batch_experiments.py --no-clearml
-
-# Изменение количества попыток при ошибке
-poetry run python run_batch_experiments.py --retry-count 5
-```
-
-**Примечание:** Скрипт должен запускаться через `poetry run python`, так как зависимости установлены в виртуальном окружении Poetry. Если вы используете активированное окружение Poetry (`poetry shell`), можно запускать напрямую `python run_batch_experiments.py`.
-
-#### Запуск в фоновом режиме (tmux):
-
-Для длительных экспериментов рекомендуется использовать `tmux` для запуска в фоновом режиме:
-
-```bash
-# 1. Создать новую сессию tmux
-tmux new-session -s experiments
-
-# 2. Внутри tmux выполнить команды:
-poetry shell
-python run_batch_experiments.py
-
-# 3. Отключиться от сессии (не убивая процесс): Ctrl+B, затем D
-# Или из терминала (если сессия запущена в фоне):
-tmux detach -s experiments
-
-# 4. Подключиться к сессии для просмотра прогресса
-tmux attach -t experiments
-
-# 5. Посмотреть список активных сессий
+tmux new-session -s slm-batch
+cd /path/to/slm_experiments
+poetry run python run_batch_experiments.py --experiment-mode no_context --models qwen_0.6b --datasets local_simple_qa
+# отсоединиться: Ctrl+B, затем D
+tmux attach -t slm-batch
 tmux ls
-
-# 6. Убить сессию (если нужно остановить эксперименты)
-tmux kill-session -t experiments
+# остановить сессию: внутри tmux Ctrl+C, затем exit; или: tmux kill-session -t slm-batch
 ```
 
-**Запуск с параметрами через tmux:**
-```bash
-# 1. Создать новую сессию tmux
-tmux new-session -s experiments
+## Результаты
 
-# 2. Внутри tmux выполнить команды:
-cd /home/dolganov/slm_experiments
+Каталог: **`no_context/<имя_эксперимента>/`** (имя = `model_dataset_no_context` и т.п., см. Hydra).
 
-# С конкретными моделями и датасетами
-poetry run python run_batch_experiments.py --models qwen_0.6b qwen_1.7b --datasets local_simple_qa
+Файлы:
 
-# Или с ограничением параллелизма
-poetry run python run_batch_experiments.py --max-parallel 2
+- `<имя>_predictions.json`
+- `<имя>_metrics.json`
+- `<имя>_conf.json`
 
-# 3. Отключиться от сессии: Ctrl+B, затем D
-```
-
-#### Как это работает:
-
-1. **Автоматическое определение**:
-   - Все модели из `configs/model/` (6 моделей)
-   - Все датасеты из `configs/dataset/` (3 датасета)
-   - Итого: 6 × 3 = 18 экспериментов
-
-2. **Распределение по GPU**:
-   - По умолчанию: `max_parallel = количество GPU` (4 для вашего случая)
-   - Каждый эксперимент получает свою GPU
-   - Гарантируется эксклюзивное использование GPU для корректного логирования мощности
-
-3. **Мониторинг**:
-   - Проверка реального использования GPU через `nvidia-smi`
-   - Учет процессов других пользователей
-   - Автоматическое ожидание освобождения GPU
-
-4. **Логирование**:
-   - Прогресс в ClearML и консоль
-   - Состояние каждой GPU
-   - Финальный отчет с успешными и неудачными экспериментами
-
-#### Пример вывода:
-
-```
-📦 Автоопределение моделей: ['qwen_0.6b', 'qwen_1.7b', 'qwen_4b', 'smollm2_1.7b', 'smollm2_135m', 'smollm2_360m']
-   Всего моделей: 6
-📊 Автоопределение датасетов: ['local_mirage', 'local_nq', 'local_simple_qa', 'rag_nq']
-   Всего датасетов: 3
-🎯 Всего будет запущено экспериментов: 18 (6 моделей × 3 датасета)
-✅ Настроено для использования всех 4 GPU параллельно
-✅ Гарантируется эксклюзивное использование GPU (одна GPU = один эксперимент)
-✅ Мощность GPU будет логироваться корректно для каждого эксперимента
-```
-
-#### Важные особенности:
-
-- **Эксклюзивное использование GPU**: По умолчанию каждая GPU используется только одним экспериментом одновременно. Это необходимо для корректного логирования мощности GPU (nvidia-smi показывает общее потребление всей GPU, а не отдельного процесса).
-
-- **Учет других пользователей**: Скрипт проверяет реальное использование GPU через `nvidia-smi` и учитывает процессы других пользователей. Если GPU занята другими процессами, скрипт пропустит её и найдет свободную.
-
-- **Кеширование моделей**: Модели кешируются между запусками. Путь к кешу задаётся в `.env` (переменная `DOCKER_MODELS_CACHE`, по умолчанию `/storage/docker-models`).
-
-- **Логирование мощности**: Каждый эксперимент логирует потребление мощности GPU. При эксклюзивном использовании GPU мощность логируется корректно для каждого эксперимента.
-
-#### Рекомендации:
-
-- Используйте `max_parallel <= количество GPU` для корректного логирования мощности
-- При наличии других пользователей на машине скрипт автоматически учтет их процессы
-- Для максимальной эффективности используйте `max_parallel = количество GPU` (по умолчанию)
-
-### Сравнение экспериментов
-
-1. **Запуск серии экспериментов**:
-   ```bash
-   # Автоматический запуск всех комбинаций (рекомендуется)
-   python run_batch_experiments.py
-   
-   # Или вручную для запуска нескольких экспериментов с разными параметрами:
-   # 1. Отредактируйте configs/config.yaml, измените модель на smollm2_135m
-   # 2. Запустите: CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-   # 3. Отредактируйте configs/config.yaml, измените модель на smollm2_360m
-   # 4. Запустите: CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-   # И т.д.
-   
-   # Все результаты будут сохранены в ClearML и доступны для сравнения
-   ```
-
-2. **Анализ результатов**:
-   - Сравнивайте Token Recall между экспериментами
-   - Анализируйте время выполнения для разных моделей
-   - Учитывайте использование памяти при выборе модели
-
-### Добавление новых конфигураций
-
-1. **Создание конфига модели**:
-   - Скопируйте существующий конфиг из `configs/model/`
-   - Измените параметры под ваши нужды
-   - Сохраните с новым именем
-
-2. **Настройка эксперимента**:
-   - При необходимости добавьте новые параметры в `configs/config.yaml`
-   - Создайте новые конфиги датасетов в `configs/dataset/`
-   - Документируйте изменения
-
-### Советы и рекомендации
-
-1. **Оптимизация памяти**:
-   - Для моделей >1.7B используйте `load_in_8bit: true`
-   - Настройте `batch_size` в зависимости от размера модели
-   - Включите `gradient_checkpointing` для очень больших моделей
-
-2. **Воспроизводимость**:
-   - Всегда указывайте имя эксперимента
-   - Фиксируйте все параметры в конфигах
-   - Сохраняйте версии используемых моделей
-
-3. **Производительность**:
-   - Используйте кэширование данных
-   - Правильно выбирайте batch_size
-   - При возможности используйте flash attention
-
-## Добавление новых компонентов
-
-### Добавление новой модели
-1. Создайте новый класс модели в `src/models/`
-2. Реализуйте интерфейс `BaseModel`
-3. Добавьте конфигурацию в `configs/model/`
-
-### Добавление нового ретривера (для будущего использования)
-1. Создайте новый класс ретривера в `src/retrievers/`
-2. Реализуйте интерфейс `BaseRetriever`
-3. Добавьте конфигурацию в `configs/retriever/`
-
-### Добавление нового датасета
-1. Создайте новый класс датасета в `src/data/`
-2. Реализуйте интерфейс `BaseDataset`
-3. Добавьте конфигурацию в `configs/dataset/`
-
-## Полезные команды Poetry
-
-```bash
-# Просмотр установленных зависимостей
-poetry show
-
-# Обновление зависимостей
-poetry update
-
-# Добавление новой зависимости
-poetry add package-name
-
-# Добавление dev зависимости
-poetry add --group dev package-name
-
-# Запуск команды в виртуальном окружении
-poetry run python script.py
-
-# Активация shell
-poetry shell
-
-# Просмотр информации о проекте
-poetry info
-
-# Экспорт зависимостей в requirements.txt
-poetry export -f requirements.txt --output requirements.txt
-```
-
-## Структура проекта
+## Структура репозитория
 
 ```
 slm_experiments/
-├── data/                    # Данные
-│   ├── nq/                 # Natural Questions
-│   │   ├── NQ-open.dev.merged.jsonl      # Исходный файл
-│   │   └── nq_full_dataset.json          # Полный датасет (3610 примеров)
-│   └── simple_qa/          # SimpleQA
-│       ├── simple_qa_test_set_with_documents.csv  # Исходный файл
-│       └── simple_qa_converted.json     # Конвертированный датасет
-│   └── mirage/             # MIRAGE
-│       └── mirage_converted.json        # Конвертированный датасет
-├── configs/                # Конфигурации Hydra
-│   ├── model/             # Конфигурации моделей
-│   ├── dataset/           # Конфигурации датасетов
-│   └── experiment_mode/   # Режимы экспериментов
-├── src/                   # Исходный код
-│   ├── data/              # Обработка датасетов
-│   ├── models/            # Реализации моделей
-│   ├── retrievers/        # Реализации ретриверов
-│   ├── experiment/        # Запуск экспериментов и метрики
-│   └── utils/             # Общие утилиты
-├── outputs/               # Результаты экспериментов
-├── .cache/                # Кэш данных
-├── pyproject.toml         # Poetry конфигурация
-├── .env                   # Переменные окружения (S3, ClearML, DOCKER_MODELS_CACHE)
-├── run_experiment_simple.py  # Основной скрипт запуска
-├── convert_nq_data.py     # Скрипт конвертации NQ данных
-├── convert_simple_qa_data.py  # Скрипт конвертации SimpleQA данных
-├── convert_mirage_data.py # Скрипт конвертации MIRAGE данных с загрузкой документов
-├── test_local_data.py     # Тест загрузки локальных NQ данных
-├── test_simple_qa_data.py  # Тест загрузки локальных SimpleQA данных
-├── upload_to_s3.py        # Загрузка данных в S3
-├── download_from_s3.py    # Скачивание данных из S3
-├── download_processed_data.py  # Скачивание готовых обработанных данных (быстро!)
-├── process_s3_data.py     # Обработка данных из S3 (автоматическая)
-├── test_s3_connection.py  # Тестирование подключения к S3
-├── Dockerfile.experiments  # Dockerfile для сборки образа экспериментов
-├── build_docker_image.sh   # Скрипт сборки Docker образа
-├── run_experiment_fast.sh   # Быстрый запуск через Docker
-├── run_in_docker_network.sh # Запуск через временный Docker контейнер
-└── run_batch_experiments.py # Автоматический запуск серии экспериментов с управлением GPU
-└── run_batch_experiments.py # Автоматический запуск серии экспериментов с управлением GPU
+├── configs/
+│   ├── model/
+│   ├── dataset/
+│   └── experiment_mode/    # сейчас no_context
+├── src/
+│   ├── data/
+│   ├── models/
+│   ├── experiment/
+│   └── utils/
+├── run_experiment_simple.py
+├── run_batch_experiments.py
+├── build_docker_image.sh
+├── Dockerfile.experiments
+├── clearml.conf.docker
+├── .env.example
+└── pyproject.toml
 ```
 
-## 📊 Логирование в ClearML
+## ClearML и MinIO
 
-Фреймворк поддерживает полное логирование экспериментов в ClearML:
-
-### Что логируется:
-- **Полная конфигурация эксперимента** - все параметры модели, датасета, ретривера
-- **Метрики в реальном времени** - Token Recall, время выполнения, использование памяти
-- **Предсказания модели** - все вопросы, ответы и контексты для анализа
-- **Артефакты** - файлы результатов, предсказаний и статистики памяти
-
-### Быстрый старт с ClearML:
-```bash
-# Запуск эксперимента с ClearML (конфигурация из configs/config.yaml)
-CLEARML_CONFIG_FILE=./clearml.conf poetry run python run_experiment_simple.py
-
-# Запуск без ClearML
-poetry run python run_experiment_simple.py --no-clearml
-
-# Для изменения параметров (количество сэмплов, модель, датасет):
-# Отредактируйте configs/config.yaml, измените:
-# - experiment_mode: no_context (все данные) / test_10_samples / test_100_samples
-# - model: smollm2_135m / smollm2_360m / smollm2_1.7b
-# - dataset: local_nq / local_simple_qa / local_mirage
-```
-
-### Настройка ClearML:
-Убедитесь, что файл `.env` содержит корректные настройки ClearML:
-```bash
-# Проверка настроек
-cat .env | grep CLEARML
-```
-
-### Хранение результатов:
-- **ClearML Database** - метрики, конфигурации, метаданные (легковесные данные)
-- **MinIO S3** - артефакты (predictions.json, results.json, memory_usage.json - тяжелые данные)
-- Артефакты хранятся в бакете `s3://51.250.43.3:9000/clearml-artifacts`
-- Проверка артефактов: `poetry run python check_minio_artifacts.py`
-
-### Доступные метрики:
-- **Scalars** - итоговые числовые значения (Token Recall, Total Time, и др.)
-- **Plots** - таблица с итоговыми метриками и графики прогресса
-- **Console** - полный лог эксперимента
-- **Debug Samples** - примеры предсказаний модели (первые 100)
+Метрики и задачи — в ClearML; тяжёлые артефакты загружаются в MinIO кодом эксперимента (boto3 с `endpoint_url` из `.env`). Для стабильной работы SDK в Docker в проекте отключена привязка `task.output_uri` к S3 через встроенную проверку ClearML; регистрация артефактов в задаче сохраняется.

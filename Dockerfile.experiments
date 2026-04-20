@@ -9,7 +9,7 @@ RUN apt-get update -qq && \
     apt-get install -y -qq curl git > /dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Остальные зависимости (должны совпадать с pyproject.toml / requirements.txt)
+# Остальные зависимости (должны совпадать с pyproject.toml)
 RUN pip install --no-cache-dir \
     clearml \
     boto3 \
@@ -24,10 +24,6 @@ RUN pip install --no-cache-dir \
     psutil \
     safetensors \
     unidecode
-
-# Установка зависимостей проекта (если есть requirements.txt)
-# COPY requirements.txt .
-# RUN pip install --no-cache-dir -r requirements.txt
 
 # По умолчанию запускаем bash
 CMD ["bash"]

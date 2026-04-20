@@ -7,16 +7,29 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
-# Копируем конфигурацию Docker сети ДО импорта ClearML, если её нет
-_config_path = Path.home() / ".clearml.conf"
-if not _config_path.exists():
-    # Пробуем найти конфигурацию в рабочей директории
-    _project_root = Path(__file__).parent.parent.parent
-    _docker_config = _project_root / "clearml.conf.docker"
-    if _docker_config.exists():
-        import shutil
-        _config_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(_docker_config, _config_path)
+
+def _ensure_clearml_conf_file() -> None:
+    """
+    Кладёт clearml.conf.docker в ~/.clearml.conf до import clearml.
+
+    В контейнере с HOME=/tmp битый или пустой /tmp/.clearml.conf остаётся между
+    попытками в рамках одного run; без sdk.storage.direct_access boto3 ходит в AWS
+    и даёт InvalidAccessKeyId для minioadmin. В Docker всегда перезаписываем из репозитория.
+    """
+    import shutil
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    docker_cfg = project_root / "clearml.conf.docker"
+    if not docker_cfg.is_file():
+        return
+    target = Path.home() / ".clearml.conf"
+    in_docker = Path("/.dockerenv").exists()
+    if in_docker or not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(docker_cfg, target)
+
+
+_ensure_clearml_conf_file()
 
 from clearml import Task, Logger
 
@@ -88,7 +101,7 @@ def setup_clearml_environment(env_file: Optional[str] = None) -> None:
 
 
 def create_clearml_task(
-    project_name: str = "slm-experiments",
+    project_name: str = "no_context",
     task_name: str = "experiment",
     tags: Optional[list] = None,
     env_file: Optional[str] = None
@@ -107,17 +120,9 @@ def create_clearml_task(
     """
     # Настраиваем окружение
     setup_clearml_environment(env_file)
-    
-    # Проверяем наличие конфигурационного файла и копируем если нужно
+
+    _ensure_clearml_conf_file()
     config_path = Path.home() / ".clearml.conf"
-    if not config_path.exists():
-        # Пробуем найти конфигурацию в рабочей директории
-        project_root = Path(__file__).parent.parent.parent
-        docker_config = project_root / "clearml.conf.docker"
-        if docker_config.exists():
-            import shutil
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(docker_config, config_path)
     
     # Парсим конфигурационный файл и устанавливаем переменные окружения
     # ClearML SDK может не читать файл правильно, поэтому используем переменные окружения
@@ -153,12 +158,15 @@ def create_clearml_task(
             import logging
             logging.getLogger(__name__).warning(f"Не удалось распарсить конфигурацию: {e}")
     
-    # Создаем задачу
+    # output_uri=False: не выставлять default_output_uri (s3://...) и не вызывать
+    # check_write_permissions — у SDK при s3:// без корректного endpoint часто уходит запрос на AWS.
+    # Артефакты в MinIO загружаются в ExperimentRunner через boto3 и регистрируются в задаче отдельно.
     task = Task.init(
         project_name=project_name,
         task_name=task_name,
         tags=tags or [],
-        auto_connect_frameworks=False  # Отключаем автоматическое подключение фреймворков
+        auto_connect_frameworks=False,
+        output_uri=False,
     )
     
     return task
@@ -262,7 +270,7 @@ def log_predictions_to_clearml(logger: Logger, predictions: list, max_examples: 
         logger.report_text(f"\n... и еще {len(predictions) - max_examples} примеров")
 
 
-def log_metrics_to_clearml(logger: Logger, metrics: Dict[str, float]) -> None:
+def log_metrics_to_clearml(logger: Logger, metrics: Dict[str, Any]) -> None:
     """
     Логирует метрики в ClearML как таблицу и скаляры
     

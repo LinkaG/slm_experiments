@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Iterator, Optional
+from typing import Dict, Any, Iterator, Optional, Union, List
 from dataclasses import dataclass
 
 @dataclass
 class DatasetItem:
     """Container for dataset items."""
     question: str
-    answer: Optional[str]
+    answer: Optional[Union[str, List[str]]]
     context: Optional[str]
     metadata: Dict[str, Any]
 
@@ -20,11 +20,6 @@ class BaseDataset(ABC):
     
     def load_from_s3(self, bucket: str, key: str):
         """Load dataset from S3."""
-        pass
-    
-    @abstractmethod
-    def get_train_data(self) -> Iterator[DatasetItem]:
-        """Get training data iterator."""
         pass
     
     @abstractmethod

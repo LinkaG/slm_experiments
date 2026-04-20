@@ -5,13 +5,24 @@ from pathlib import Path
 from statistics import mean
 import json
 import time
-from clearml import Task, Logger
 from omegaconf import OmegaConf
 try:
     from tqdm import tqdm
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
+
+# clearml_config кладёт clearml.conf.docker в ~/.clearml.conf до import clearml — иначе SDK
+# инициализируется без MinIO (HOME=/tmp в Docker с --user). Не импортировать clearml раньше этого.
+from ..utils.clearml_config import (
+    setup_clearml_environment,
+    create_clearml_task,
+    get_clearml_logger,
+    log_experiment_config,
+    log_predictions_to_clearml,
+    log_metrics_to_clearml,
+)
+from clearml import Task, Logger
 
 from ..models.base import BaseModel
 from ..retrievers.base import BaseRetriever
@@ -21,14 +32,6 @@ from ..utils.memory_tracker import MemoryTracker
 from ..utils.predictions_tracker import PredictionsTracker
 from ..utils.logger_wrapper import LoggerWrapper
 from ..utils.local_logger import LocalLogger
-from ..utils.clearml_config import (
-    setup_clearml_environment, 
-    create_clearml_task, 
-    get_clearml_logger,
-    log_experiment_config,
-    log_predictions_to_clearml,
-    log_metrics_to_clearml
-)
 
 @dataclass
 class ExperimentConfig:
@@ -45,7 +48,9 @@ class ExperimentConfig:
     prompt_template: str = "Question: {question}\nAnswer:"  # default prompt
     system_prompt: Optional[str] = None  # optional system message for chat models
     model: Optional[Any] = None
-    clearml_project: str = "slm-experiments"
+    clearml_project: str = "no_context"
+    # Полный resolved-конфиг Hydra для {name}_conf.json (опционально)
+    hydra_config: Optional[Dict[str, Any]] = None
 
 class ExperimentRunner:
     """Main class for running experiments."""
@@ -57,8 +62,12 @@ class ExperimentRunner:
         # чтобы использовать тот же tokenizer, что и модель
         self.metric_calculator = None
         self.memory_tracker = MemoryTracker(Path(config.output_dir))
-        self.predictions_tracker = PredictionsTracker(Path(config.output_dir))
-        
+        self.predictions_tracker = PredictionsTracker(Path(config.output_dir), config.name)
+
+    def _artifact_stem(self) -> str:
+        """Имя эксперимента, безопасное для имён файлов."""
+        return self.config.name.replace("/", "_").replace("\\", "_")
+
     def setup_experiment(self, use_clearml: bool = True):
         """Initialize ClearML, create directories, etc."""
         self.use_clearml = use_clearml  # Сохраняем для использования в других методах
@@ -75,27 +84,12 @@ class ExperimentRunner:
                       self.config.context_type]
             )
             
-            # Устанавливаем output_uri для сохранения артефактов в MinIO S3
-            # Пробуем установить явно, если не получается - используем default_output_uri
-            s3_output_uri = f"s3://clearml-artifacts/{self.config.name}"
-            try:
-                # Устанавливаем output_uri для задачи
-                # Это нужно для того, чтобы upload_artifact() сохранял в S3, а не в fileserver
-                self.task.output_uri = s3_output_uri
-                self.logger.info(f"📦 Output URI установлен: {s3_output_uri}")
-                self.logger.info(f"💾 Артефакты будут сохраняться в MinIO bucket 'clearml-artifacts'")
-                
-                # Проверяем, что output_uri действительно установлен
-                actual_output_uri = getattr(self.task, 'output_uri', None)
-                if actual_output_uri:
-                    self.logger.info(f"✅ Подтверждено: output_uri = {actual_output_uri}")
-                else:
-                    self.logger.warning("⚠️  output_uri не установлен после попытки установки")
-            except Exception as e:
-                # Если не удалось установить output_uri, используем default_output_uri из конфига
-                self.logger.warning(f"⚠️ Не удалось установить output_uri: {e}")
-                self.logger.info("💡 Используется default_output_uri из конфигурации")
-                self.logger.info("⚠️ Артефакты могут сохраняться в fileserver вместо MinIO")
+            # Не задаём task.output_uri для S3: ClearML делает check_write_permissions через boto3
+            # без надёжного MinIO endpoint из конфига (часто InvalidAccessKeyId к AWS).
+            # Файлы в MinIO — через _upload_file_to_minio; в ClearML — upload_artifact (путь/ссылка).
+            self.logger.info(
+                "📦 ClearML output_uri отключён; загрузка артефактов в MinIO — напрямую (boto3), регистрация в задаче"
+            )
             
             # Конвертируем OmegaConf объекты в обычные Python типы для ClearML
             config_dict = {
@@ -261,20 +255,16 @@ class ExperimentRunner:
         else:
             metrics['retriever_index_size_bytes'] = 0
             metrics['retriever_index_size_mb'] = 0
-        
-        # Сохраняем результаты
-        self._save_results(metrics)
-        
+
         # Финальное состояние памяти и сохранение лога
         self.memory_tracker.log_memory("system", "experiment_end")
         self.memory_tracker.save_log()
-        
-        # Добавляем информацию о пиковом использовании памяти в метрики
+
+        # Пиковые замеры + детальный лог памяти в один объект метрик
         if self.memory_tracker.peak_stats:
             peak_memory = self.memory_tracker.peak_stats.to_dict()
             metrics.update(peak_memory)
-            
-            # Логируем пиковую память и мощность
+
             self.logger.report_text("💾 Пиковое использование памяти:")
             self.logger.report_text(f"  CPU RAM: {peak_memory['cpu_ram_used_mb']:.2f} MB")
             if peak_memory['gpu_ram_peak_mb'] > 0:
@@ -283,36 +273,54 @@ class ExperimentRunner:
             if peak_memory.get('gpu_power_draw_w', 0) > 0:
                 power_limit = peak_memory.get('gpu_power_limit_w', 0)
                 power_pct = (peak_memory['gpu_power_draw_w'] / power_limit * 100) if power_limit > 0 else 0
-                self.logger.report_text(f"  GPU Power (peak): {peak_memory['gpu_power_draw_w']:.2f}W / {power_limit:.2f}W ({power_pct:.1f}%)")
-        
-        # Пересохраняем результаты с обновленными метриками
-        self._save_results(metrics)
+                self.logger.report_text(
+                    f"  GPU Power (peak): {peak_memory['gpu_power_draw_w']:.2f}W / "
+                    f"{power_limit:.2f}W ({power_pct:.1f}%)"
+                )
+
+        memory_file = self.config.output_dir / "memory_usage.json"
+        if memory_file.exists():
+            try:
+                with open(memory_file, "r", encoding="utf-8") as f:
+                    metrics["memory"] = json.load(f)
+            except Exception as e:
+                self.logger.warning(f"⚠️ Не удалось прочитать memory_usage.json: {e}")
+                metrics["memory"] = {}
+            try:
+                memory_file.unlink()
+            except OSError:
+                pass
+        else:
+            metrics["memory"] = {}
+
+        # Конфиг + метрики на диск и в S3
+        conf_path = self._save_conf_file()
+        metrics_path = self._save_metrics_file(metrics)
+        self._upload_artifacts_bundle(metrics_path, conf_path)
         
         # Сохраняем предсказания и загружаем как артефакт в MinIO
         # Передаем callback для прямой загрузки в MinIO через Docker сеть
+        predictions_path = self.predictions_tracker.predictions_json_path
         if self.use_clearml and self.task is not None:
-            # Сохраняем предсказания и загружаем в MinIO через callback
             predictions_s3_path = self.predictions_tracker.save_predictions(
                 upload_to_minio_callback=self._upload_to_minio_direct
             )
-            # Регистрируем артефакт в ClearML с метаданными и ссылкой на MinIO
             if predictions_s3_path:
-                predictions_file = self.config.output_dir / "predictions.json"
                 self._register_clearml_artifact(
                     name="model_predictions",
                     s3_path=predictions_s3_path,
-                    local_file=predictions_file,
+                    local_file=predictions_path,
                     metadata={
                         "experiment_name": self.config.name,
                         "num_predictions": len(self.predictions_tracker.predictions),
                         "timestamp": time.time(),
                         "storage": "MinIO S3",
-                        "s3_path": predictions_s3_path
-                    }
+                        "s3_path": predictions_s3_path,
+                    },
                 )
         else:
             self.predictions_tracker.save_predictions()
-        
+
         # Логируем завершение эксперимента
         self.logger.report_text("✅ Эксперимент успешно завершен!")
         self.logger.report_text(f"📈 Substring recall: {metrics.get('substring_recall', 0):.4f}")
@@ -320,58 +328,9 @@ class ExperimentRunner:
         self.logger.report_text(f"📊 Количество примеров: {metrics.get('num_examples', 0)}")
         self.logger.report_text(f"📦 Размер модели: {metrics.get('model_size_mb', 0):.2f} MB")
         self.logger.report_text(f"🔍 Размер индекса RAG: {metrics.get('retriever_index_size_mb', 0):.2f} MB")
-        
-        # oracle_long: статистика по мультифрагментным примерам
-        stats = self.predictions_tracker.get_statistics()
-        if stats.get("oracle_long_fragment_stats"):
-            frag_stats = stats["oracle_long_fragment_stats"]
-            self.logger.report_text("📋 oracle_long (мультифрагменты):")
-            self.logger.report_text(f"  Примеров с несколькими фрагментами: {frag_stats['items_with_multiple_fragments']}")
-            self.logger.report_text(f"  Среднее фрагментов на пример: {frag_stats['avg_fragments_per_item']:.2f}")
-            self.logger.report_text(f"  Макс. фрагментов: {frag_stats['max_fragments']}")
-            if frag_stats.get("inferences_saved_by_dedup", 0) > 0:
-                self.logger.report_text(f"  Дедупликация: сэкономлено {frag_stats['inferences_saved_by_dedup']} инференсов ({frag_stats['items_with_duplicate_fragments']} примеров с дубликатами)")
-        
-        # Сохраняем все данные локального логгера (если используется)
-        if not self.use_clearml and hasattr(self, 'local_logger'):
-            self.local_logger.save_all(self.config.name)
-            
-            # Сохраняем артефакты
-            results_file = self.config.output_dir / "results.json"
-            if results_file.exists():
-                self.local_logger.save_artifact("experiment_results", results_file)
-            
-            predictions_file = self.config.output_dir / "predictions.json"
-            if predictions_file.exists():
-                self.local_logger.save_artifact("model_predictions", predictions_file)
-            
-            memory_file = self.config.output_dir / "memory_usage.json"
-            if memory_file.exists():
-                self.local_logger.save_artifact("memory_usage", memory_file)
-        
-    def _get_context(self, item: DatasetItem, retriever: Optional[BaseRetriever]) -> List[str]:
-        """Get context based on experiment mode."""
-        if not self.config.use_retriever:
-            if self.config.context_type == "none":
-                return []
-            elif self.config.context_type == "oracle":
-                return [item.context] if item.context else []
-            elif self.config.context_type == "oracle_long":
-                # long_context: list (NQ, MIRAGE) or long_answer: str (MIRAGE)
-                metadata = item.metadata or {}
-                long_context = metadata.get("long_context", [])
-                if not long_context and metadata.get("long_answer"):
-                    long_context = [metadata["long_answer"]]
-                return [c for c in long_context if c] if isinstance(long_context, list) else []
-        else:
-            if not retriever:
-                raise ValueError("Retriever is required for retriever_context mode")
-            contexts = retriever.retrieve(
-                item.question, 
-                top_k=self.config.top_k
-            )
-            return [c.context for c in contexts if c.score >= self.config.min_score]
 
+        self._finalize_logging_and_cleanup(metrics, predictions_path, metrics_path, conf_path)
+        
     def _evaluate(self, model: BaseModel, retriever: Optional[BaseRetriever], 
                  dataset: BaseDataset) -> Dict[str, float]:
         """Evaluate model performance using token recall metric."""
@@ -413,99 +372,29 @@ class ExperimentRunner:
             
             if self.config.max_samples and processed >= self.config.max_samples:
                 break
-                
-            # Track memory for retrieval
-            if retriever:
-                self.memory_tracker.log_memory("retriever", "before_retrieve")
-            
-            # Get context based on experiment mode
-            contexts = self._get_context(item, retriever)
-            
-            # Skip items without long_context in oracle_long mode (e.g. simple_qa has no long_answer yet)
-            if self.config.context_type == "oracle_long" and not contexts:
-                continue
-            
-            if retriever:
-                self.memory_tracker.log_memory("retriever", "after_retrieve")
-            
+
+            # Режим no_context: без внешнего контекста
+            contexts: List[str] = []
+
             ground_truth_for_recall = get_ground_truth_for_recall(item.metadata, item.answer)
-            
-            # oracle_long с несколькими фрагментами: прогоняем каждый уникальный, берём лучший recall
-            use_multi_fragment = (
-                self.config.context_type == "oracle_long" and len(contexts) > 1
+
+            self.memory_tracker.log_memory("model", "before_generate")
+            generate_kwargs = dict(
+                prompt=item.question,
+                context=contexts,
+                prompt_template=self.config.prompt_template
             )
-            
-            if use_multi_fragment:
-                # Дедупликация: аннотаторы иногда выделяют одни и те же фрагменты
-                seen = set()
-                fragments_to_run = []
-                for frag in contexts:
-                    key = (frag or "").strip()
-                    if not key:
-                        continue
-                    if key not in seen:
-                        seen.add(key)
-                        fragments_to_run.append(frag)
-                if not fragments_to_run:
-                    fragments_to_run = [c for c in contexts if (c or "").strip()][:1] or contexts[:1]
-                
-                self.memory_tracker.log_memory("model", "before_generate")
-                per_fragment_recalls = []
-                best_recall = 0.0
-                best_predicted_answer = None
-                best_context = None
-                best_prompt = None
-                best_fragment_idx = 0
-                
-                for frag_idx, fragment in enumerate(fragments_to_run):
-                    generate_kwargs = dict(
-                        prompt=item.question,
-                        context=[fragment],
-                        prompt_template=self.config.prompt_template
-                    )
-                    if self.config.system_prompt is not None:
-                        generate_kwargs['system_prompt'] = self.config.system_prompt
-                    pred = model.generate(**generate_kwargs)
-                    frag_recall = self.metric_calculator.calculate_recall(
-                        predicted=pred, ground_truth=ground_truth_for_recall
-                    )
-                    per_fragment_recalls.append(frag_recall)
-                    if frag_recall > best_recall:
-                        best_recall = frag_recall
-                        best_predicted_answer = pred
-                        best_context = fragment
-                        best_prompt = model.last_prompt if hasattr(model, 'last_prompt') else None
-                        best_fragment_idx = frag_idx
-                
-                self.memory_tracker.log_memory("model", "after_generate")
-                recall = best_recall
-                predicted_answer = best_predicted_answer
-                prediction_contexts = [best_context]
-                prediction_prompt = best_prompt
-                prediction_metadata_extra = {
-                    'oracle_long_fragment_count': len(contexts),
-                    'oracle_long_unique_fragments_run': len(fragments_to_run),
-                    'oracle_long_best_fragment_idx': best_fragment_idx,
-                    'oracle_long_per_fragment_recalls': per_fragment_recalls,
-                }
-            else:
-                self.memory_tracker.log_memory("model", "before_generate")
-                generate_kwargs = dict(
-                    prompt=item.question,
-                    context=contexts,
-                    prompt_template=self.config.prompt_template
-                )
-                if self.config.system_prompt is not None:
-                    generate_kwargs['system_prompt'] = self.config.system_prompt
-                predicted_answer = model.generate(**generate_kwargs)
-                self.memory_tracker.log_memory("model", "after_generate")
-                recall = self.metric_calculator.calculate_recall(
-                    predicted=predicted_answer, ground_truth=ground_truth_for_recall
-                )
-                prediction_contexts = contexts
-                prediction_prompt = model.last_prompt if hasattr(model, 'last_prompt') else None
-                prediction_metadata_extra = {}
-            
+            if self.config.system_prompt is not None:
+                generate_kwargs['system_prompt'] = self.config.system_prompt
+            predicted_answer = model.generate(**generate_kwargs)
+            self.memory_tracker.log_memory("model", "after_generate")
+            recall = self.metric_calculator.calculate_recall(
+                predicted=predicted_answer, ground_truth=ground_truth_for_recall
+            )
+            prediction_contexts = contexts
+            prediction_prompt = model.last_prompt if hasattr(model, 'last_prompt') else None
+            prediction_metadata_extra: Dict[str, Any] = {}
+
             # Log prompt examples for first few items
             if logged_prompt_examples < max_prompt_examples and prediction_prompt:
                 if hasattr(self.logger, 'report_text'):
@@ -610,93 +499,119 @@ class ExperimentRunner:
             "num_examples": len(recalls)
         }
     
-    def _save_results(self, metrics: Dict[str, float]):
-        """Save experiment results to disk and upload to ClearML."""
-        results_file = self.config.output_dir / "results.json"
-        
-        # Сохраняем результаты локально
-        with open(results_file, "w") as f:
-            json.dump(metrics, f, indent=2)
-        
-        if self.task is not None:
-            # Загружаем результаты напрямую в MinIO
-            self.logger.info("📤 Загрузка результатов в MinIO...")
-            s3_path = self._upload_to_minio_direct(results_file, "experiment_results/results.json")
-            
-            # Регистрируем артефакт в ClearML с метаданными и ссылкой на MinIO
-            if s3_path:
-                self._register_clearml_artifact(
-                    name="experiment_results",
-                    s3_path=s3_path,
-                    local_file=results_file,
-                    metadata={
-                        "experiment_name": self.config.name,
-                        "model": self.config.model_config.get('name', 'unknown'),
-                        "dataset": self.config.dataset_config.get('name', 'unknown'),
-                        "retriever": self.config.retriever_config.get('name', 'unknown'),
-                        "timestamp": time.time(),
-                        "storage": "MinIO S3",
-                        "s3_path": s3_path
-                    }
-                )
-            
-            # Предсказания будут загружены в MinIO через save_predictions() с callback
-            # Регистрация артефакта произойдет после вызова save_predictions()
-            
-            # Также загружаем memory usage в MinIO если есть
-            memory_file = self.config.output_dir / "memory_usage.json"
-            if memory_file.exists():
-                self.logger.info("📤 Загрузка данных о памяти в MinIO...")
-                s3_path = self._upload_to_minio_direct(memory_file, "experiment_results/memory_usage.json")
-                
-                # Регистрируем артефакт в ClearML с метаданными и ссылкой на MinIO
-                if s3_path:
-                    self._register_clearml_artifact(
-                        name="memory_usage",
-                        s3_path=s3_path,
-                        local_file=memory_file,
-                        metadata={
-                            "experiment_name": self.config.name,
-                            "timestamp": time.time(),
-                            "storage": "MinIO S3",
-                            "s3_path": s3_path
-                        }
-                    )
-            
-            # Опционально удаляем локальные артефакты для экономии места
-            cleanup_local = self.config.model_config.get('cleanup_local_artifacts', False)
-            if cleanup_local:
-                self.logger.info("🗑️  Очистка локальных артефактов после загрузки в S3...")
-                import os
-                try:
-                    if results_file.exists():
-                        os.remove(results_file)
-                    if predictions_file.exists():
-                        os.remove(predictions_file)
-                    if memory_file.exists():
-                        os.remove(memory_file)
-                    self.logger.info("✅ Локальные артефакты удалены (сохранены в S3)")
-                except Exception as e:
-                    self.logger.warning(f"⚠️  Не удалось удалить локальные артефакты: {e}")
-            
-            # Логируем предсказания в ClearML
-            if hasattr(self.predictions_tracker, 'predictions') and self.predictions_tracker.predictions:
-                log_predictions_to_clearml(self.logger, self.predictions_tracker.predictions)
-            
-            # Логируем метрики в ClearML
-            log_metrics_to_clearml(self.logger, metrics)
+    def _save_conf_file(self) -> Path:
+        """{experiment}_conf.json — полная конфигурация (Hydra или собранная из ExperimentConfig)."""
+        stem = self._artifact_stem()
+        path = self.config.output_dir / f"{stem}_conf.json"
+        if self.config.hydra_config is not None:
+            payload = self.config.hydra_config
         else:
-            # Режим без ClearML - логируем метрики в локальный логгер
-            if hasattr(self, 'local_logger'):
-                # Логируем метрики как single values
-                for metric_name, value in metrics.items():
-                    self.local_logger.report_single_value(metric_name, value)
-                
-                # Также логируем в текстовом виде
-                self.logger.info("📊 Финальные результаты эксперимента:")
-                for metric_name, value in metrics.items():
-                    self.logger.info(f"  {metric_name}: {value:.4f}")
-    
+            payload = {
+                "model": self.config.model_config,
+                "retriever": self.config.retriever_config,
+                "dataset": self.config.dataset_config,
+                "metrics": self.config.metrics_config,
+                "experiment": {
+                    "name": self.config.name,
+                    "output_dir": str(self.config.output_dir),
+                    "max_samples": self.config.max_samples,
+                    "use_retriever": self.config.use_retriever,
+                    "context_type": self.config.context_type,
+                    "clearml_project": self.config.clearml_project,
+                },
+                "prompt": {
+                    "template": self.config.prompt_template,
+                    "system_prompt": self.config.system_prompt,
+                },
+            }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+        self.logger.info(f"📝 Конфигурация сохранена: {path}")
+        return path
+
+    def _save_metrics_file(self, metrics: Dict[str, Any]) -> Path:
+        """{experiment}_metrics.json — метрики, пики памяти и блок memory (timeline + peak из логгера)."""
+        stem = self._artifact_stem()
+        path = self.config.output_dir / f"{stem}_metrics.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2, default=str)
+        self.logger.info(f"📊 Метрики сохранены: {path}")
+        return path
+
+    def _upload_artifacts_bundle(self, metrics_path: Path, conf_path: Path) -> None:
+        """Загрузка metrics и conf в MinIO (при активной ClearML-задаче)."""
+        if self.task is None:
+            return
+        stem = self._artifact_stem()
+        self.logger.info("📤 Загрузка metrics и conf в MinIO...")
+        meta_base = {
+            "experiment_name": self.config.name,
+            "model": self.config.model_config.get("name", "unknown"),
+            "dataset": self.config.dataset_config.get("name", "unknown"),
+            "timestamp": time.time(),
+            "storage": "MinIO S3",
+        }
+        m_s3 = self._upload_to_minio_direct(
+            metrics_path, f"experiment_results/{stem}_metrics.json"
+        )
+        if m_s3:
+            self._register_clearml_artifact(
+                name="experiment_metrics",
+                s3_path=m_s3,
+                local_file=metrics_path,
+                metadata={**meta_base, "s3_path": m_s3},
+            )
+        c_s3 = self._upload_to_minio_direct(
+            conf_path, f"experiment_results/{stem}_conf.json"
+        )
+        if c_s3:
+            self._register_clearml_artifact(
+                name="experiment_config",
+                s3_path=c_s3,
+                local_file=conf_path,
+                metadata={**meta_base, "s3_path": c_s3},
+            )
+
+    def _finalize_logging_and_cleanup(
+        self,
+        metrics: Dict[str, Any],
+        predictions_path: Path,
+        metrics_path: Path,
+        conf_path: Path,
+    ) -> None:
+        """Текстовые логи ClearML / локальный логгер; опционально удалить три файла после S3."""
+        scalar_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+
+        if self.task is not None:
+            if self.predictions_tracker.predictions:
+                log_predictions_to_clearml(self.logger, self.predictions_tracker.predictions)
+            log_metrics_to_clearml(self.logger, scalar_metrics)
+        elif hasattr(self, "local_logger"):
+            self.local_logger.save_all(self.config.name)
+            for metric_name, value in scalar_metrics.items():
+                self.local_logger.report_single_value(metric_name, value)
+            self.logger.info("📊 Финальные результаты эксперимента (скаляры):")
+            for metric_name, value in scalar_metrics.items():
+                self.logger.info(f"  {metric_name}: {value:.4f}")
+            if metrics_path.exists():
+                self.local_logger.save_artifact("experiment_metrics", metrics_path)
+            if conf_path.exists():
+                self.local_logger.save_artifact("experiment_config", conf_path)
+            if predictions_path.exists():
+                self.local_logger.save_artifact("model_predictions", predictions_path)
+
+        cleanup_local = self.config.model_config.get("cleanup_local_artifacts", False)
+        if cleanup_local and self.task is not None:
+            import os
+            self.logger.info("🗑️  Очистка локальных артефактов после загрузки в S3...")
+            for p in (metrics_path, conf_path, predictions_path):
+                try:
+                    if p.exists():
+                        os.remove(p)
+                except OSError as e:
+                    self.logger.warning(f"⚠️  Не удалось удалить {p}: {e}")
+            self.logger.info("✅ Локальные копии удалены (данные в S3)")
+
     def _upload_to_minio_direct(self, file_path: Path, s3_key: str) -> Optional[str]:
         """Загружает файл напрямую в MinIO через boto3.
         

@@ -18,6 +18,7 @@ docker build --no-cache -f Dockerfile.experiments -t "$IMAGE_NAME:$IMAGE_TAG" .
 echo ""
 echo "✅ Образ собран успешно!"
 echo ""
-echo "💡 Теперь можно использовать быстрый скрипт:"
-echo "   ./run_experiment_fast.sh run_experiment_simple.py"
+echo "💡 Запуск пакета экспериментов:"
+echo "   poetry run python run_batch_experiments.py"
+echo "   (или одиночный прогон: docker run ... python run_experiment_simple.py ...)"
 

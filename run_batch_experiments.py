@@ -17,19 +17,13 @@
     # Без ClearML логирования
     poetry run python run_batch_experiments.py --no-clearml
     
-    # Oracle эксперименты (автоматически: проект oracle_2, папка output_2)
-    poetry run python run_batch_experiments.py --experiment-mode oracle_context
-    
-    # Oracle long context (автоматически: проект oracle_long, папка output_3)
-    poetry run python run_batch_experiments.py --experiment-mode oracle_long_context
-    
     # Или если активировано окружение Poetry (poetry shell):
     python run_batch_experiments.py
 
 Особенности:
-    - Папка и проект ClearML выбираются автоматически по experiment_mode:
-      no_context → outputs, slm-experiments | oracle_context → output_2, oracle_2 | oracle_long_context → output_3, oracle_long
-    - MinIO bucket = имя конфига experiment_mode (no_context, oracle_context, oracle_long_context)
+    - Поддерживается только режим no_context (вопросы без внешнего контекста).
+    - Проект ClearML и корень выходных папок по умолчанию = имя конфига experiment_mode (см. configs/config.yaml).
+    - Bucket MinIO = имя режима с подчёркиваниями, заменёнными на дефисы (напр. no-context).
     - Автоматическое определение доступных GPU
     - Мониторинг памяти GPU через nvidia-smi
     - Максимальный параллелизм с учетом доступной памяти
@@ -45,9 +39,8 @@ import logging
 import threading
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from queue import Queue, Empty as QueueEmpty
-from omegaconf import OmegaConf
 import yaml
 
 # Настройка логирования
@@ -60,6 +53,31 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def _minio_env_for_docker_children() -> dict:
+    """
+    Переменные MinIO/S3 для дочерних контейнеров батча.
+
+    Берутся из окружения процесса на хосте (в main() перед запуском вызывается load_dotenv(),
+    поэтому значения подхватываются из .env). Endpoint по умолчанию — имя сервиса в сети Docker,
+    не IP из .env (с хоста minio:9000 недоступен по IP контейнера без отдельной настройки).
+    Переопределение: CLEARML_S3_DOCKER_ENDPOINT.
+    """
+    import os
+
+    return {
+        "CLEARML_S3_ENDPOINT": os.environ.get(
+            "CLEARML_S3_DOCKER_ENDPOINT", "http://minio:9000"
+        ),
+        "CLEARML_S3_ACCESS_KEY": os.environ.get(
+            "CLEARML_S3_ACCESS_KEY", "minioadmin"
+        ),
+        "CLEARML_S3_SECRET_KEY": os.environ.get(
+            "CLEARML_S3_SECRET_KEY", "minioadmin"
+        ),
+        "CLEARML_S3_REGION": os.environ.get("CLEARML_S3_REGION", "us-east-1"),
+    }
 
 
 @dataclass
@@ -246,15 +264,6 @@ class GPUMonitor:
                 logger.debug(f"🔓 GPU {gpu_id} освобождена")
 
 
-# Маппинг experiment_mode -> (clearml_project, output_dir)
-# Используется по умолчанию, если не указаны --clearml-project и --output-dir
-EXPERIMENT_MODE_DEFAULTS: Dict[str, Tuple[str, str]] = {
-    "no_context": ("slm-experiments", "outputs"),
-    "oracle_context": ("oracle_2", "output_2"),
-    "oracle_long_context": ("oracle_long", "output_3"),
-}
-
-
 class BatchExperimentRunner:
     """Менеджер для запуска пакетных экспериментов."""
     
@@ -272,12 +281,20 @@ class BatchExperimentRunner:
         self.models = models
         self.datasets = datasets
         self.experiment_mode = experiment_mode
-        # Автоматически подставляем проект и папку по experiment_mode, если не указаны
-        defaults = EXPERIMENT_MODE_DEFAULTS.get(experiment_mode, ("slm-experiments", "outputs"))
-        self.clearml_project = clearml_project if clearml_project is not None else defaults[0]
-        self.output_dir = output_dir if output_dir is not None else defaults[1]
-        logger.info(f"📁 Папка результатов: {self.output_dir}")
-        logger.info(f"📊 ClearML проект: {self.clearml_project}")
+        # Переопределения Hydra (если None — experiment.output_dir и clearml_project из config.yaml = ${experiment_mode.name})
+        self.clearml_project_override = clearml_project
+        self.output_dir_override = output_dir
+        # Батч-задача в ClearML: проект совпадает с режимом, если не задан --clearml-project
+        self.batch_clearml_project = clearml_project if clearml_project is not None else experiment_mode
+        logger.info(f"📊 ClearML (батч): проект «{self.batch_clearml_project}»")
+        if self.clearml_project_override is not None:
+            logger.info("   Дочерние эксперименты: experiment.clearml_project переопределён (--clearml-project)")
+        else:
+            logger.info("   Дочерние эксперименты: experiment.clearml_project = ${experiment_mode.name} (Hydra)")
+        if self.output_dir_override is not None:
+            logger.info(f"📁 Дочерние эксперименты: корень вывода переопределён (--output-dir) → {self.output_dir_override}/…")
+        else:
+            logger.info("📁 Дочерние эксперименты: experiment.output_dir = ${experiment_mode.name}/${experiment.name} (Hydra)")
         self.max_retries = retry_count
         self.use_clearml = use_clearml
         
@@ -333,7 +350,7 @@ class BatchExperimentRunner:
             load_dotenv()
             
             self.clearml_task = Task.create(
-                project_name=self.clearml_project,
+                project_name=self.batch_clearml_project,
                 task_name=f"batch_experiments_{self.experiment_mode}",
                 task_type=Task.TaskTypes.custom
             )
@@ -347,10 +364,10 @@ class BatchExperimentRunner:
                 "gpu_count": self.gpu_count,
                 "retry_count": self.max_retries
             }
-            if self.clearml_project:
-                connect_config["clearml_project"] = self.clearml_project
-            if self.output_dir:
-                connect_config["output_dir"] = self.output_dir
+            if self.clearml_project_override is not None:
+                connect_config["clearml_project_override"] = self.clearml_project_override
+            if self.output_dir_override is not None:
+                connect_config["output_dir_override"] = self.output_dir_override
             self.clearml_task.connect(connect_config)
             
             self.clearml_logger = Logger.current_logger()
@@ -360,11 +377,12 @@ class BatchExperimentRunner:
             self.use_clearml = False
     
     def _get_s3_bucket_for_experiment_mode(self) -> str:
-        """Возвращает bucket MinIO = имя конфига experiment_mode.
+        """Имя бакета MinIO по режиму: то же, что experiment_mode, но '_' → '-' (требования S3).
         
-        Подчёркивания заменяются на дефисы (S3/MinIO не допускают _ в именах bucket).
+        Примеры: no_context → no-context, oracle_long_context → oracle-long-context.
+        Бакет при отсутствии создаётся в ExperimentRunner._upload_to_minio_direct.
         """
-        return self.experiment_mode.replace("_", "-")
+        return self.experiment_mode.replace("_", "-").lower()
     
     def _load_model_memory_estimates(self) -> Dict[str, float]:
         """Загрузить оценки памяти для моделей из конфигов."""
@@ -474,7 +492,7 @@ class BatchExperimentRunner:
         
         # Bucket MinIO = имя конфига experiment_mode
         s3_bucket = self._get_s3_bucket_for_experiment_mode()
-        logger.info(f"📦 MinIO bucket: {s3_bucket} (совпадает с experiment_mode)")
+        logger.info(f"📦 MinIO bucket: {s3_bucket} (режим {self.experiment_mode}, в S3 без подчёркиваний)")
         
         # Формируем Hydra overrides для команды
         hydra_overrides = [
@@ -482,42 +500,90 @@ class BatchExperimentRunner:
             f"dataset={task.dataset}",
             f"experiment_mode={task.experiment_mode}"
         ]
-        if self.output_dir:
+        if self.output_dir_override is not None:
             # Оборачиваем в кавычки, чтобы bash не раскрывал ${experiment.name}
-            hydra_overrides.append(f"experiment.output_dir='{self.output_dir}/${{experiment.name}}'")
-        if self.clearml_project:
-            hydra_overrides.append(f"experiment.clearml_project={self.clearml_project}")
+            hydra_overrides.append(
+                f"experiment.output_dir='{self.output_dir_override}/${{experiment.name}}'"
+            )
+        if self.clearml_project_override is not None:
+            hydra_overrides.append(f"experiment.clearml_project={self.clearml_project_override}")
 
         run_cmd = "python run_experiment_simple.py " + " ".join(hydra_overrides)
 
+        minio_env = _minio_env_for_docker_children()
+
         # Формируем команду для запуска эксперимента через Docker
         # Используем --gpus device=N для выбора конкретной GPU
-        # Все настройки из run_experiment_fast.sh, но с выбором конкретной GPU
+        # --user UID:GID = владелец новых файлов на смонтированном /workspace совпадает с пользователем хоста
+        # (иначе артефакты от root и их нужно удалять через sudo).
         docker_cmd = [
             "docker", "run", "--rm",
-            "--network", network_name,
-            "--gpus", f"device={gpu_id}",  # Выбираем конкретную GPU
-            "-v", f"{workspace_dir}:/workspace",
-            "-v", f"{workspace_dir}/clearml.conf.docker:/root/.clearml.conf:ro",
-            "-v", f"{workspace_dir}/.env:/workspace/.env:ro",
-            "-v", f"{cache_dir}/huggingface:/root/.cache/huggingface",
-            "-v", f"{cache_dir}/datasets:/root/.cache/datasets",
-            "-w", "/workspace",
-            "-e", "PYTHONPATH=/workspace",
-            "-e", "TRANSFORMERS_CACHE=/root/.cache/huggingface",
-            "-e", "HF_HOME=/root/.cache/huggingface",
-            "-e", "CLEARML_S3_ENDPOINT=http://minio:9000",
-            "-e", f"CLEARML_S3_BUCKET={s3_bucket}",
-            "-e", "CLEARML_S3_ACCESS_KEY=minioadmin",
-            "-e", "CLEARML_S3_SECRET_KEY=minioadmin",
-            "-e", "CLEARML_S3_REGION=us-east-1",
-            image_name,
-            "bash", "-c",
-            run_cmd
         ]
+        try:
+            docker_cmd.extend(
+                [
+                    "--user",
+                    f"{os.getuid()}:{os.getgid()}",
+                    "-e",
+                    "HOME=/tmp",
+                ]
+            )
+        except AttributeError:
+            # Windows и прочие системы без os.getuid()
+            pass
+
+        docker_cmd.extend(
+            [
+                "--network",
+                network_name,
+                "--gpus",
+                f"device={gpu_id}",
+                "-v",
+                f"{workspace_dir}:/workspace",
+                "-v",
+                f"{workspace_dir}/.env:/workspace/.env:ro",
+                "-v",
+                f"{cache_dir}/huggingface:/cache/huggingface",
+                "-v",
+                f"{cache_dir}/datasets:/cache/datasets",
+                "-w",
+                "/workspace",
+                "-e",
+                "PYTHONPATH=/workspace",
+                "-e",
+                "TRANSFORMERS_CACHE=/cache/huggingface",
+                "-e",
+                "HF_HOME=/cache/huggingface",
+                "-e",
+                "HF_DATASETS_CACHE=/cache/datasets",
+                "-e",
+                "CLEARML_CONFIG_FILE=/workspace/clearml.conf.docker",
+                "-e",
+                f"CLEARML_S3_ENDPOINT={minio_env['CLEARML_S3_ENDPOINT']}",
+                "-e",
+                f"CLEARML_S3_BUCKET={s3_bucket}",
+                "-e",
+                f"CLEARML_S3_ACCESS_KEY={minio_env['CLEARML_S3_ACCESS_KEY']}",
+                "-e",
+                f"CLEARML_S3_SECRET_KEY={minio_env['CLEARML_S3_SECRET_KEY']}",
+                "-e",
+                f"CLEARML_S3_REGION={minio_env['CLEARML_S3_REGION']}",
+                image_name,
+                "bash",
+                "-c",
+                run_cmd,
+            ]
+        )
         
         logger.info(f"🚀 Запуск в Docker: {task.model} × {task.dataset} на GPU {gpu_id}")
-        logger.debug(f"   Полная команда: {' '.join(docker_cmd)}")
+        if logger.isEnabledFor(logging.DEBUG):
+            redacted = list(docker_cmd)
+            for i, part in enumerate(redacted):
+                if part.startswith("CLEARML_S3_SECRET_KEY="):
+                    redacted[i] = "CLEARML_S3_SECRET_KEY=***"
+                elif part.startswith("CLEARML_S3_ACCESS_KEY="):
+                    redacted[i] = "CLEARML_S3_ACCESS_KEY=***"
+            logger.debug("   Полная команда: %s", " ".join(redacted))
         
         try:
             # Запускаем эксперимент
@@ -870,19 +936,20 @@ def main():
     import argparse
     from dotenv import load_dotenv
 
-    load_dotenv()  # Загружаем .env (DOCKER_MODELS_CACHE и др.)
+    # Подхватываем CLEARML_S3_* и др.; дочерние контейнеры получают их через -e из os.environ
+    load_dotenv()
 
     parser = argparse.ArgumentParser(description='Запуск пакетных экспериментов')
     parser.add_argument('--models', nargs='+', default=None,
                         help='Список моделей (по умолчанию все из configs/model/)')
     parser.add_argument('--datasets', nargs='+', default=None,
                         help='Список датасетов (по умолчанию local_nq, local_simple_qa)')
-    parser.add_argument('--experiment-mode', default='no_context',
-                        help='Режим эксперимента (по умолчанию: no_context)')
+    parser.add_argument('--experiment-mode', default='no_context', choices=['no_context'],
+                        help='Режим эксперимента (сейчас только no_context)')
     parser.add_argument('--clearml-project', default=None,
-                        help='Проект в ClearML (переопределяет авто-выбор по experiment_mode)')
+                        help='Переопределить experiment.clearml_project (по умолчанию Hydra: ${experiment_mode.name})')
     parser.add_argument('--output-dir', default=None,
-                        help='Папка для результатов (переопределяет авто-выбор по experiment_mode)')
+                        help='Переопределить корень experiment.output_dir (по умолчанию Hydra: ${experiment_mode.name})')
     parser.add_argument('--max-parallel', type=int, default=None,
                         help='Максимальное количество параллельных экспериментов')
     parser.add_argument('--retry-count', type=int, default=3,

@@ -6,8 +6,9 @@ defaults:
 
 experiment:
   name: ${model.name}_${dataset.name}_${experiment_mode.name}
-  output_dir: outputs/${experiment.name}
-  clearml_project: slm-experiments  # проект в ClearML для логирования
+  # Корень вывода и проект ClearML = поле name из configs/experiment_mode/<режим>.yaml
+  output_dir: ${experiment_mode.name}/${experiment.name}
+  clearml_project: ${experiment_mode.name}
   
   # Experiment settings
   seed: 42
@@ -17,7 +18,7 @@ experiment:
 
 hydra:
   run:
-    dir: outputs/${experiment.name}
+    dir: ${experiment_mode.name}/${experiment.name}
   sweep:
     dir: multirun
     subdir: ${experiment.name}

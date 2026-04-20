@@ -19,7 +19,6 @@ from dotenv import load_dotenv
 # Импортируем компоненты проекта
 from src.experiment.runner import ExperimentRunner, ExperimentConfig
 from src.models import get_model
-from src.retrievers import get_retriever
 from src.data import get_dataset
 from src.data.base import DatasetItem
 
@@ -98,14 +97,32 @@ def run_experiment_with_config(use_clearml=None, env_file='.env', hydra_override
         
         logger.info("✅ Конфигурация загружена")
 
-        # Проверяем наличие данных
-        train_path = Path(config.dataset.train_path)
-        eval_path = Path(config.dataset.eval_path)
+        # MinIO: один бакет на режим = experiment_mode.name, с дефисами вместо '_' (правила имён S3)
+        mode_bucket = str(config.experiment_mode.name).replace("_", "-").lower()
+        os.environ["CLEARML_S3_BUCKET"] = mode_bucket
+        logger.info(f"📦 MinIO bucket для режима: {mode_bucket}")
 
-        if not train_path.exists() or not eval_path.exists():
-            logger.error("❌ Файлы данных не найдены. Проверьте пути в конфиге.")
-            return False
-        logger.info("✅ Файлы данных найдены")
+        # Проверяем наличие данных
+        qa_pairs_path = OmegaConf.select(config.dataset, "qa_pairs_path")
+
+        if qa_pairs_path:
+            data_path = Path(str(qa_pairs_path))
+            if not data_path.exists():
+                logger.error(f"❌ Файл данных не найден: {data_path}")
+                return False
+            logger.info(f"✅ qa_pairs: {data_path}")
+        else:
+            eval_path_str = OmegaConf.select(config.dataset, "eval_path") or OmegaConf.select(
+                config.dataset, "train_path"
+            )
+            if not eval_path_str:
+                logger.error("❌ В конфиге датасета укажите eval_path (или qa_pairs_path).")
+                return False
+            eval_path = Path(str(eval_path_str))
+            if not eval_path.exists():
+                logger.error(f"❌ Файл данных не найден: {eval_path}")
+                return False
+            logger.info(f"✅ eval: {eval_path}")
 
         output_dir = Path(config.experiment.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -113,11 +130,7 @@ def run_experiment_with_config(use_clearml=None, env_file='.env', hydra_override
 
         logger.info("📊 Загрузка данных...")
         dataset = get_dataset(config.dataset)
-        
-        # Ретривер нужен только для некоторых режимов
-        retriever = None
-        if config.experiment_mode.get('use_retriever', False):
-            retriever = get_retriever(config.retriever)
+        retriever = None  # только режим no_context — ретривер не используется
 
         model = get_model(config.model)
 
@@ -142,7 +155,8 @@ def run_experiment_with_config(use_clearml=None, env_file='.env', hydra_override
             context_type=config.experiment_mode.get('context_type', 'none'),
             prompt_template=config.experiment_mode.get('prompt_template', 'Question: {question}\nAnswer:'),
             system_prompt=config.experiment_mode.get('system_prompt'),
-            clearml_project=config.experiment.get('clearml_project', 'slm-experiments')
+            clearml_project=config.experiment.get('clearml_project', config.experiment_mode.name),
+            hydra_config=OmegaConf.to_container(config, resolve=True),
         )
 
         runner = ExperimentRunner(experiment_config)

@@ -206,6 +206,9 @@ outputs/
 output_2/
 results/
 experiments/
+# Hydra: experiment.output_dir = ${experiment_mode.name}/${experiment.name}
+no_context/
+multirun/
 runs/
 wandb/
 tensorboard/
